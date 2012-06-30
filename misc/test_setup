@@ -1,5 +1,5 @@
 #!/usr/bin/php
-<?
+<?php
 set_include_path("../include");
 require("header.inc.php");
 require("../model/Error.inc.php");
@@ -12,9 +12,9 @@ Zotero_DB::query("DELETE FROM syncProcesses");
 Zotero_DB::query("DELETE FROM syncDownloadQueue");
 Zotero_DB::query("DELETE FROM syncUploadQueue");
 Zotero_DB::query("DELETE FROM libraries WHERE libraryID>3");
-shell_exec("echo 'DELETE FROM zotero_www_test.users WHERE userID>2' | mysql -h 127.0.0.1 -P 3311 -u root");
+shell_exec("echo 'DELETE FROM zotero_www_test.users WHERE userID>2' | mysql -h localhost -P 3311 -u root");
 
-shell_exec("killall memcached; /usr/local/bin/memcached -d");
+shell_exec("killall memcached; /usr/bin/memcached -d -u root");
 
 $shards = array(1,2);
 foreach ($shards as $shardID) {
@@ -56,4 +56,5 @@ $itemObj->setField('key', "CCCC3333", false, true);
 $itemObj->setField('itemTypeID', 14, false, true);
 $itemID = $itemObj->save();
 
+echo "Test setup is successfull.\n";
 ?>
