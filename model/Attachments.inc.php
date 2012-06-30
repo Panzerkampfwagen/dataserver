@@ -1,4 +1,4 @@
-<?
+<?php
 class Zotero_Attachments {
 	private static $cacheTime = 60; // seconds to cache extracted ZIP files
 	

@@ -1,4 +1,4 @@
-<?
+<?php
 class Zotero_Cite {
 	private static $citePaperJournalArticleURL = false;
 	

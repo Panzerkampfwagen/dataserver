@@ -1,4 +1,4 @@
-<?
+<?php
 class Z_HTTP {
 	public static function e204() {
 		header('HTTP/1.1 204 No Content');

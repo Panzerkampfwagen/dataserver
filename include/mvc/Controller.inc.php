@@ -1,4 +1,4 @@
-<?
+<?php
 class Controller {
 	protected $action;
 	protected $routeVariables = array();

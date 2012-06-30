@@ -1,5 +1,5 @@
 #!/usr/bin/php
-<?
+<?php
 // Populate storageFilesExisting with the ids of all files on all shards
 
 set_include_path("../include");
