@@ -1,38 +1,46 @@
 #!/bin/sh
-MASTER="mysql -h 127.0.0.1 -P 3307 -u root"
-SHARD="mysql -h 127.0.0.1 -P 3308 -u root"
-ID1="mysql -h 127.0.0.1 -P 3309 -u root"
-ID2="mysql -h 127.0.0.1 -P 3310 -u root"
-WWW="mysql -h 127.0.0.1 -P 3311 -u root"
+MASTER="mysql -h localhost -P 3307 -u root"
+SHARD="mysql -h localhost -P 3308 -u root"
+ID1="mysql -h localhost -P 3309 -u root"
+ID2="mysql -h localhost -P 3310 -u root"
+WWW="mysql -h localhost -P 3311 -u root"
+CACHE="mysql -h localhost -P 3312 -u root"
 
+echo "Deleting databases"
 echo "DROP DATABASE IF EXISTS zoterotest1" | $SHARD
 echo "DROP DATABASE IF EXISTS zoterotest2" | $SHARD
 echo "DROP DATABASE IF EXISTS zoterotest_master" | $SHARD
-echo "DROP DATABASE IF EXISTS zoterotest_master" | $MASTER
 echo "DROP DATABASE IF EXISTS zoterotest_ids" | $ID1
-echo "DROP DATABASE IF EXISTS zoterotest_ids" | $ID2
+echo "DROP DATABASE IF EXISTS zotero_cache" | $CACHE
+echo "DROP DATABASE IF EXISTS zotero_www" | $WWW
+echo "DROP DATABASE IF EXISTS zotero_www_test" | $WWW
 
-echo "CREATE DATABASE zoterotest_master" | $MASTER
-echo "CREATE DATABASE zoterotest_master" | $SHARD
+echo "Creating databases"
 echo "CREATE DATABASE zoterotest1" | $SHARD
 echo "CREATE DATABASE zoterotest2" | $SHARD
+echo "CREATE DATABASE zoterotest_master" | $MASTER
 echo "CREATE DATABASE zoterotest_ids" | $ID1
-echo "CREATE DATABASE zoterotest_ids" | $ID2
+echo "CREATE DATABASE zotero_cache" | $CACHE
+echo "CREATE DATABASE zotero_www" | $WWW
+echo "CREATE DATABASE zotero_www_test" | $WWW
 
+echo "Deleting users"
 echo "DROP USER zoterotest0@localhost;" | $MASTER
 echo "DROP USER zoterotest1@localhost;" | $SHARD
 echo "DROP USER zoterotest2@localhost;" | $SHARD
 echo "DROP USER zoterotest_ids@localhost;" | $ID1
-echo "DROP USER zoterotest_ids@localhost;" | $ID2
 echo "DROP USER zoterotest_www@localhost;" | $WWW
+echo "DROP USER zotero_cache@localhost;" | $CACHE
 
+echo "Creating users"
 echo "CREATE USER zoterotest0@localhost IDENTIFIED BY 'pass0';" | $MASTER
 echo "CREATE USER zoterotest1@localhost IDENTIFIED BY 'pass1';" | $SHARD
 echo "CREATE USER zoterotest2@localhost IDENTIFIED BY 'pass2';" | $SHARD
 echo "CREATE USER zoterotest_ids@localhost IDENTIFIED BY 'pass1';" | $ID1
-echo "CREATE USER zoterotest_ids@localhost IDENTIFIED BY 'pass2';" | $ID2
 echo "CREATE USER zoterotest_www@localhost IDENTIFIED BY 'pass';" | $WWW
+echo "CREATE USER zotero_cache@localhost IDENTIFIED BY 'pass';" | $WWW
 
+echo "Updating user privileges"
 echo "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE TEMPORARY TABLES ON zoterotest_master.* TO zoterotest0@localhost;" | $MASTER
 
 echo "GRANT SELECT ON zoterotest_master.* TO zoterotest1@localhost;" | $SHARD
@@ -44,29 +52,49 @@ echo "GRANT SELECT,INSERT,DELETE ON zoterotest_ids.* TO zoterotest_ids@localhost
 echo "GRANT SELECT,INSERT,DELETE ON zoterotest_ids.* TO zoterotest_ids@localhost;" | $ID2
 
 echo "GRANT SELECT ON zotero_www_test.* TO zoterotest_www@localhost;" | $WWW
+echo "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE TEMPORARY TABLES ON zotero_cache.* TO zotero_cache@localhost;" | $CACHE
 
+echo "Filling databases with default fields"
 # Load in master schema
 $MASTER zoterotest_master < master.sql
 $MASTER zoterotest_master < coredata.sql
+$MASTER zotero_www        < zotero_www.sql
+$MASTER zotero_www_test   < zotero_www.sql
 
 # Set up shard info
-echo "INSERT INTO shardHosts VALUES (1, '127.0.0.1', 3308, 'up');" | $MASTER zoterotest_master
-echo "INSERT INTO shards VALUES (1, 1, 'zoterotest1', 'pass1', 'zoterotest1', 'up');" | $MASTER zoterotest_master
-echo "INSERT INTO shards VALUES (2, 1, 'zoterotest2', 'pass2', 'zoterotest2', 'up');" | $MASTER zoterotest_master
+echo "INSERT INTO shardHosts (\`shardHostID\`, \`address\`, \`port\`, \`state\`) VALUES (1, 'localhost', 3308, 'up');" | $MASTER zoterotest_master
+
+#echo "INSERT INTO shards VALUES (1, 1, 'zoterotest1', 'pass1', 'zoterotest1', 'up');" | $MASTER zoterotest_master
+#  `password` -> 'pass2', 
+echo "INSERT INTO shards  (\`shardID\`, \`shardHostID\`, \`db\`, \`state\`, \`items\`)  VALUES (1, 1, 'zoterotest1', 'up', 0);" | $MASTER zoterotest_master
+
+#echo "INSERT INTO shards VALUES (2, 1, 'zoterotest2', 'pass2', 'zoterotest2', 'up');" | $MASTER zoterotest_master
+# echo "INSERT INTO shards VALUES (2, 1, 'zoterotest2','zoterotest2', 'up');" | $MASTER zoterotest_master
+echo "INSERT INTO shards  (\`shardID\`, \`shardHostID\`, \`db\`, \`state\`, \`items\`)  VALUES (2, 1, 'zoterotest1', 'up', 0);" | $MASTER zoterotest_master
+
 
 # Initial users and groups for tests
-echo "INSERT INTO libraries VALUES (1, 'user', '0000-00-00 00:00:00', 0, 1)" | $MASTER zoterotest_master
-echo "INSERT INTO libraries VALUES (2, 'user', '0000-00-00 00:00:00', 0, 1)" | $MASTER zoterotest_master
-echo "INSERT INTO libraries VALUES (3, 'group', '0000-00-00 00:00:00', 0, 2)" | $MASTER zoterotest_master
-echo "INSERT INTO users VALUES (1, 1, 'testuser', '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
-echo "INSERT INTO users VALUES (2, 2, 'testuser2', '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
-echo "INSERT INTO groups VALUES (1, 3, 'Test Group', 'test_group', 'Private', 1, 'admins', 'all', 'members', '', '', 0, '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
-echo "INSERT INTO groupUsers VALUES (1, 1, 'owner', '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
+##INSERT INTO `libraries` (`libraryID`, `libraryType` , `lastUpdated` , `version`, `shardID` ) VALUES  
+##(1,  'user',  '0000-00-00 00:00:00',  0,  1);
+echo "INSERT INTO libraries (\`libraryID\`, \`libraryType\`, \`lastUpdated\`, \`version\`, \`shardID\`) VALUES (1, 'user', '0000-00-00 00:00:00', 0, 1)" | $MASTER zoterotest_master
+echo "INSERT INTO libraries (\`libraryID\`, \`libraryType\`, \`lastUpdated\`, \`version\`, \`shardID\`) VALUES (2, 'user', '0000-00-00 00:00:00', 0, 1)" | $MASTER zoterotest_master
+echo "INSERT INTO libraries (\`libraryID\`, \`libraryType\`, \`lastUpdated\`, \`version\`, \`shardID\`) VALUES (3, 'group', '0000-00-00 00:00:00', 0, 2)" | $MASTER zoterotest_master
+
+echo "INSERT INTO users (\`userID\`, \`libraryID\`, \`username\`, \`joined\`, \`lastSyncTime\`) VALUES (1, 1, 'testuser', '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
+echo "INSERT INTO users (\`userID\`, \`libraryID\`, \`username\`, \`joined\`, \`lastSyncTime\`) VALUES (2, 2, 'testuser2', '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
+
+echo "INSERT INTO groups (\`groupID\`, \`libraryID\`, \`name\`, \`slug\`, \`type\`, \`libraryEnabled\`, \`libraryEditing\`, \`libraryReading\`, \`fileEditing\`, \`description\`, \`url\`, \`hasImage\`, \`dateAdded\`, \`dateModified\`) VALUES (1, 3, 'Test Group', 'test_group', 'Private', 1, 'admins', 'all', 'members', '', '', 0, '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
+
+echo "INSERT INTO groupUsers (\`groupID\`, \`userID\`, \`role\`, \`joined\`, \`lastUpdated\`) VALUES (1, 1, 'owner', '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
 
 # Set up sample users
+# Set up sample user in zotero_www_test
 echo "DELETE FROM users" | $WWW zotero_www_test
-echo "INSERT INTO users VALUES (1, 'testuser', 'b7a875fc1ea228b9061041b7cec4bd3c52ab3ce3', 'test@zotero.org', NULL, 'member', NULL, NULL, NULL, 1, '0000-00-00 00:00:00', '0000-00-00 00:00:00', 0, 'testuser')" | $WWW zotero_www_test
-echo "INSERT INTO users VALUES (2, 'testuser2', 'fc707fc0b8c62cfeeafffde7273978d29d6d2374', 'test2@zotero.org', NULL, 'member', NULL, NULL, NULL, 1, '0000-00-00 00:00:00', '0000-00-00 00:00:00', 0, 'testuser2')" | $WWW zotero_www_test
+echo "INSERT INTO users VALUES (1, 'testuser', 'testuser', '45c571a156ddcef41351a713bcddee5ba7e95460', 'test@zotero.org', NULL, 'member', NULL, NULL, NULL, 1, 0, '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $WWW zotero_www_test
+
+# Set up sample user in zotero_www
+echo "DELETE FROM users" | $WWW zotero_www
+echo "INSERT INTO users VALUES (1, 'testuser', 'testuser', '45c571a156ddcef41351a713bcddee5ba7e95460', 'test@zotero.org', NULL, 'member', NULL, NULL, NULL, 1, 0, '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $WWW zotero_www
 
 # Load in shard schema
 cat shard.sql | $SHARD zoterotest1
@@ -76,11 +104,14 @@ cat triggers.sql | $SHARD zoterotest2
 
 echo "INSERT INTO shardLibraries VALUES (1, 'user')" | $SHARD zoterotest1
 echo "INSERT INTO shardLibraries VALUES (2, 'user')" | $SHARD zoterotest1
+echo "INSERT INTO shardLibraries VALUES (3, 'group')" | $SHARD zoterotest1
 echo "INSERT INTO shardLibraries VALUES (3, 'group')" | $SHARD zoterotest2
 
 # Load in schema on id servers
 $ID1 zoterotest_ids < ids.sql
-$ID2 zoterotest_ids < ids.sql
+#$ID2 zoterotest_ids < ids.sql
+
+cat cache.sql | $SHARD zotero_cache
 
 # Master my.cnf:
 #
@@ -144,6 +175,4 @@ $ID2 zoterotest_ids < ids.sql
 #
 # auto-increment-increment = 2
 # auto-increment-offset = 2
-
-
-./test_setup
+echo "Reset is successfull. Now run ./test_setup"
