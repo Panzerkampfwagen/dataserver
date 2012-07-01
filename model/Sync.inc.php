@@ -1308,9 +1308,9 @@ class Zotero_Sync {
 			// Make sure no other upload sessions use this same timestamp
 			// for any of these libraries, since we return >= 1 as the next
 			// last sync time
-			if (!Zotero_Libraries::setTimestampLock($affectedLibraries, $timestamp)) {
-				throw new Exception("Library timestamp already used", Z_ERROR_LIBRARY_TIMESTAMP_ALREADY_USED);
-			}
+			//if (!Zotero_Libraries::setTimestampLock($affectedLibraries, $timestamp)) {
+			//	throw new Exception("Library timestamp already used", Z_ERROR_LIBRARY_TIMESTAMP_ALREADY_USED);
+			//}
 			
 			// Add/update creators
 			if ($xml->creators) {
