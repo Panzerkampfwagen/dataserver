@@ -1,10 +1,10 @@
 #!/bin/sh
-MASTER="mysql -h localhost -P 3307 -u root"
-SHARD="mysql -h localhost -P 3308 -u root"
-ID1="mysql -h localhost -P 3309 -u root"
-ID2="mysql -h localhost -P 3310 -u root"
-WWW="mysql -h localhost -P 3311 -u root"
-CACHE="mysql -h localhost -P 3312 -u root"
+MASTER="mysql -h localhost -P 3307 -u root -pSecurePassword"
+SHARD="mysql -h localhost -P 3308 -u root -pSecurePassword"
+ID1="mysql -h localhost -P 3309 -u root -pSecurePassword"
+ID2="mysql -h localhost -P 3310 -u root -pSecurePassword"
+WWW="mysql -h localhost -P 3311 -u root -pSecurePassword"
+CACHE="mysql -h localhost -P 3312 -u root -pSecurePassword"
 
 echo "Deleting databases"
 echo "DROP DATABASE IF EXISTS zoterotest1" | $SHARD
