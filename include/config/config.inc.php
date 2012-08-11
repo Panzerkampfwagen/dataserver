@@ -61,7 +61,7 @@ class Z_CONFIG {
 
 	// Set some things manually for running via command line
 	public static $CLI_PHP_PATH = '/usr/bin/php';
-	public static $CLI_DOCUMENT_ROOT = "/srv/http/ZoteroDataServer";
+	public static $CLI_DOCUMENT_ROOT = "/srv/http/ZoteroDataServer/";
 
 	public static $SYNC_ERROR_PATH = '/var/log/httpd/sync-errors/';
 	public static $API_ERROR_PATH = '/var/log/httpd/api-errors/';
