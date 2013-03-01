@@ -123,12 +123,12 @@ class Zotero_Creator {
 		}
 		
 		$sql = "SELECT COUNT(*) FROM creators WHERE creatorID=?";
-		return !!Zotero_DB::valueQuery($sql, $this->id, Zotero_Shards::getShardIDByLibraryID($this->libraryID));
+		return !!Zotero_DB::valueQuery($sql, $this->id, Zotero_Shards::getByLibraryID($this->libraryID));
 	}
 	
 	
 	public function hasChanged() {
-		return !!$this->changed;
+		return in_array(true, array_values($this->changed));
 	}
 	
 	
@@ -161,12 +161,12 @@ class Zotero_Creator {
 			
 			Z_Core::debug("Saving creator $this->id");
 			
-			$key = $this->key ? $this->key : $this->generateKey();
+			$key = $this->key ? $this->key : Zotero_ID::getKey();
 			
 			$timestamp = Zotero_DB::getTransactionTimestamp();
 			
 			$dateAdded = $this->dateAdded ? $this->dateAdded : $timestamp;
-			$dateModified = $this->changed['dateModified'] ? $this->dateModified : $timestamp;
+			$dateModified = !empty($this->changed['dateModified']) ? $this->dateModified : $timestamp;
 			
 			$fields = "firstName=?, lastName=?, fieldMode=?,
 						libraryID=?, `key`=?, dateAdded=?, dateModified=?, serverDateModified=?";
@@ -256,12 +256,33 @@ class Zotero_Creator {
 		
 		if ($isNew) {
 			Zotero_Creators::cache($this);
-			Zotero_Creators::cacheLibraryKeyID($this->libraryID, $key, $creatorID);
 		}
 		
 		// TODO: invalidate memcache?
 		
 		return $this->id;
+	}
+	
+	
+	public function getLinkedItems() {
+		if (!$this->id) {
+			return array();
+		}
+		
+		$items = array();
+		$sql = "SELECT itemID FROM itemCreators WHERE creatorID=?";
+		$itemIDs = Zotero_DB::columnQuery(
+			$sql,
+			$this->id,
+			Zotero_Shards::getByLibraryID($this->libraryID)
+		);
+		if (!$itemIDs) {
+			return $items;
+		}
+		foreach ($itemIDs as $itemID) {
+			$items[] = Zotero_Items::get($this->libraryID, $itemID);
+		}
+		return $items;
 	}
 	
 	
@@ -347,10 +368,6 @@ class Zotero_Creator {
 		}
 	}
 	
-	
-	private function generateKey() {
-		return Zotero_ID::getKey();
-	}
 	
 	
 	private function invalidValueError($field, $value) {

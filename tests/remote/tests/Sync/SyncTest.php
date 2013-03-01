@@ -36,11 +36,15 @@ class SyncTests extends PHPUnit_Framework_TestCase {
 		foreach ($config as $k => $v) {
 			self::$config[$k] = $v;
 		}
+		
+		API::useAPIVersion(2);
 	}
 	
 	
 	public function setUp() {
 		API::userClear(self::$config['userID']);
+		API::groupClear(self::$config['ownedPrivateGroupID']);
+		API::groupClear(self::$config['ownedPublicGroupID']);
 		self::$sessionID = Sync::login();
 	}
 	
@@ -52,8 +56,7 @@ class SyncTests extends PHPUnit_Framework_TestCase {
 	
 	
 	public function testSyncEmpty() {
-		$response = $this->updated();
-		$xml = Sync::getXMLFromResponse($response);
+		$xml = Sync::updated(self::$sessionID);
 		$this->assertEquals("0", (string) $xml['earliest']);
 		$this->assertFalse(isset($xml->updated->items));
 		$this->assertEquals(self::$config['userID'], (int) $xml['userID']);
@@ -64,124 +67,43 @@ class SyncTests extends PHPUnit_Framework_TestCase {
 	 * @depends testSyncEmpty
 	 */
 	public function testSync() {
-		$response = $this->updated();
-		$xml = Sync::getXMLFromResponse($response);
+		$xml = Sync::updated(self::$sessionID);
 		
 		// Upload
 		$data = file_get_contents("data/sync1upload.xml");
 		$data = str_replace('libraryID=""', 'libraryID="' . self::$config['libraryID'] . '"', $data);
 		
-		$response = $this->updated();
-		$xml = Sync::getXMLFromResponse($response);
+		$xml = Sync::updated(self::$sessionID);
 		$updateKey = (string) $xml['updateKey'];
 		
-		$response = $this->upload($updateKey, $data);
-		
-		$xml = Sync::getXMLFromResponse($response);
-		$this->assertTrue(isset($xml->queued));
-		
-		$max = 5;
-		do {
-			$wait = (int) $xml->queued['wait'];
-			sleep($wait / 1000);
-			
-			$response = $this->uploadstatus();
-			$xml = Sync::getXMLFromResponse($response);
-			
-			$max--;
-		}
-		while (isset($xml->queued) && $max > 0);
-		
-		if (!$max) {
-			$this->fail("Upload did not finish after $max attempts");
-		}
-		
-		$this->assertTrue(isset($xml->uploaded));
+		$response = Sync::upload(self::$sessionID, $updateKey, $data);
+		Sync::waitForUpload(self::$sessionID, $response, $this);
 		
 		// Download
-		$response = $this->updated();
-		$xml = Sync::getXMLFromResponse($response);
-		
-		$max = 5;
-		do {
-			$wait = (int) $xml->locked['wait'];
-			sleep($wait / 1000);
-			
-			$response = $this->updated();
-			$xml = Sync::getXMLFromResponse($response);
-			
-			//var_dump($response->getBody());
-			
-			$max--;
-		}
-		while (isset($xml->locked) && $max > 0);
-		
-		if (!$max) {
-			$this->fail("Download did not finish after $max attempts");
-		}
-		
-		$xml = Sync::getXMLFromResponse($response);
+		$xml = Sync::updated(self::$sessionID);
 		unset($xml->updated->groups);
 		$xml['timestamp'] = "";
 		$xml['updateKey'] = "";
 		$xml['earliest'] = "";
 		
 		$this->assertXmlStringEqualsXmlFile("data/sync1download.xml", $xml->asXML());
-	}
-	
-	
-	
-	private function req($path, $params=array(), $gzip=false) {
-		$url = self::$config['syncURLPrefix'] . $path;
 		
-		$params = array_merge(
-			array(
-				"sessionid" => self::$sessionID,
-				"version" => self::$config['apiVersion']
-			),
-			$params
-		);
+		// Test fully cached download
+		$xml = Sync::updated(self::$sessionID);
+		unset($xml->updated->groups);
+		$xml['timestamp'] = "";
+		$xml['updateKey'] = "";
+		$xml['earliest'] = "";
 		
-		if ($gzip) {
-			$data = "";
-			foreach ($params as $key => $val) {
-				$data .= $key . "=" . urlencode($val) . "&";
-			}
-			$data = gzdeflate(substr($data, 0, -1));
-			$headers = array(
-				"Content-Type: application/octet-stream",
-				"Content-Encoding: gzip"
-			);
-		}
-		else {
-			$data = $params;
-			$headers = array();
-		}
+		$this->assertXmlStringEqualsXmlFile("data/sync1download.xml", $xml->asXML());
 		
-		$response = HTTP::post($url, $data, $headers);
-		Sync::checkResponse($response);
-		return $response;
-	}
-	
-	
-	private function updated($lastsync=1) {
-		return $this->req("updated", array("lastsync" => $lastsync));
-	}
-	
-	
-	private function upload($updateKey, $data) {
-		return $this->req(
-			"upload",
-			array(
-				"updateKey" => $updateKey,
-				"data" => $data,
-			),
-			true
-		);
-	}
-	
-	
-	private function uploadstatus() {
-		return $this->req("uploadstatus");
+		// Test item-level cached download
+		$xml = Sync::updated(self::$sessionID, 2);
+		unset($xml->updated->groups);
+		$xml['timestamp'] = "";
+		$xml['updateKey'] = "";
+		$xml['earliest'] = "";
+		
+		$this->assertXmlStringEqualsXmlFile("data/sync1download.xml", $xml->asXML());
 	}
 }

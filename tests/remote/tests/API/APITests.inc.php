@@ -39,7 +39,20 @@ class APITests extends PHPUnit_Framework_TestCase {
 			self::$config[$k] = $v;
 		}
 		self::$nsZAPI = 'http://zotero.org/ns/api';
+		
+		// Enable note access
+		API::setKeyOption(
+			self::$config['userID'], self::$config['apiKey'], 'libraryNotes', 1
+		);
+		
+		API::useAPIVersion(2);
 	}
+	
+	
+	public function setUp() {
+		API::useAPIVersion(2);
+	}
+	
 	
 	public function test() {}
 	
@@ -48,12 +61,60 @@ class APITests extends PHPUnit_Framework_TestCase {
 			$this->assertHTTPStatus($arguments[0], $matches[1]);
 			return;
 		}
+		// assertNNNForObject($response, $message=false, $pos=0)
+		if (preg_match("/^assert([1-5][0-9]{2}|Unchanged)ForObject$/", $name, $matches)) {
+			$code = $matches[1];
+			if ($arguments[0] instanceof HTTP_Request2_Response) {
+				$this->assert200($arguments[0]);
+				$json = json_decode($arguments[0]->getBody(), true);
+			}
+			else if (is_string($arguments[0])) {
+				$json = json_decode($arguments[0], true);
+			}
+			else {
+				$json = $arguments[0];
+			}
+			$this->assertNotNull($json);
+			
+			$expectedMessage = !empty($arguments[1]) ? $arguments[1] : false;
+			$index = isset($arguments[2]) ? $arguments[2] : 0;
+			
+			if ($code == 200) {
+				$this->assertArrayHasKey('success', $json);
+				if (!isset($json['success'][$index])) {
+					var_dump($json);
+					throw new Exception("Index $index not found in success object");
+				}
+				if ($expectedMessage) {
+					throw new Exception("Cannot check response message of object for HTTP $code");
+				}
+			}
+			else if ($code == 'Unchanged') {
+				$this->assertArrayHasKey('unchanged', $json);
+				$this->assertArrayHasKey($index, $json['unchanged']);
+				if ($expectedMessage) {
+					throw new Exception("Cannot check response message of unchanged object");
+				}
+			}
+			else if ($code[0] == '4' || $code[0] == '5') {
+				$this->assertArrayHasKey('failed', $json);
+				$this->assertArrayHasKey($index, $json['failed']);
+				$this->assertEquals($code, $json['failed'][$index]['code']);
+				if ($expectedMessage) {
+					$this->assertEquals($expectedMessage, $json['failed'][$index]['message']);
+				}
+			}
+			else {
+				throw new Exception("HTTP $code cannot be returned for an individual object");
+			}
+			return;
+		}
 		throw new Exception("Invalid function $name");
 	}
 	
 	
-	protected function assertHasResults($req) {
-		$xml = $req->getBody();
+	protected function assertHasResults($res) {
+		$xml = $res->getBody();
 		$xml = new SimpleXMLElement($xml);
 		
 		$zapiNodes = $xml->children(self::$nsZAPI);
@@ -61,17 +122,25 @@ class APITests extends PHPUnit_Framework_TestCase {
 		$this->assertNotEquals(0, count($xml->entry));
 	}
 	
-	protected function assertNumResults($num, $req) {
-		$xml = $req->getBody();
+	
+	protected function assertNumResults($num, $res) {
+		$xml = $res->getBody();
+		$xml = new SimpleXMLElement($xml);
+		
+		$this->assertEquals($num, count($xml->entry));
+	}
+	
+	protected function assertTotalResults($num, $res) {
+		$xml = $res->getBody();
 		$xml = new SimpleXMLElement($xml);
 		
 		$zapiNodes = $xml->children(self::$nsZAPI);
 		$this->assertEquals($num, (int) $zapiNodes->totalResults);
-		$this->assertEquals($num, count($xml->entry));
 	}
 	
-	protected function assertNoResults($req) {
-		$xml = $req->getBody();
+	
+	protected function assertNoResults($res) {
+		$xml = $res->getBody();
 		$xml = new SimpleXMLElement($xml);
 		
 		$zapiNodes = $xml->children(self::$nsZAPI);
@@ -90,6 +159,7 @@ class APITests extends PHPUnit_Framework_TestCase {
 			throw ($e);
 		}
 	}
+	
 	
 	private function assertHTTPStatus($response, $status) {
 		try {

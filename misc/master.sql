@@ -94,6 +94,7 @@ CREATE TABLE `groups` (
   `hasImage` tinyint(1) unsigned NOT NULL DEFAULT '0',
   `dateAdded` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `dateModified` timestamp NOT NULL DEFAULT '0000-00-00 00:00:00',
+  `version` tinyint(3) unsigned NOT NULL DEFAULT '1',
   PRIMARY KEY (`groupID`),
   UNIQUE KEY `libraryID` (`libraryID`),
   UNIQUE KEY `slug` (`slug`)
@@ -145,12 +146,13 @@ CREATE TABLE `itemTypes` (
 
 
 
-CREATE TABLE `keyAccessLog` (
+CREATE TABLE IF NOT EXISTS `keyAccessLog` (
   `keyID` int(10) unsigned NOT NULL,
-  `ipAddress` int(10) unsigned DEFAULT NULL,
+  `ipAddress` int(10) unsigned NOT NULL DEFAULT '0',
   `timestamp` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  KEY `keyID` (`keyID`)
+  PRIMARY KEY (`keyID`,`ipAddress`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
 
 
 
@@ -302,6 +304,10 @@ CREATE TABLE `storageUploadQueue` (
   `hash` char(32) NOT NULL,
   `filename` varchar(1024) NOT NULL,
   `zip` tinyint(1) unsigned NOT NULL,
+  `size` int(10) unsigned NOT NULL,
+  `mtime` bigint(13) unsigned NOT NULL,
+  `contentType` varchar(75) DEFAULT NULL,
+  `charset` varchar(25) DEFAULT NULL,
   `time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`uploadKey`),
   KEY `userID` (`userID`)

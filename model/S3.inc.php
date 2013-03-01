@@ -25,7 +25,7 @@
 */
 
 class Zotero_S3 {
-	public static $defaultQuota = 100;
+	public static $defaultQuota = 300;
 	public static $uploadQueueLimit = 10;
 	public static $uploadQueueTimeout = 300;
 	
@@ -284,7 +284,7 @@ class Zotero_S3 {
 					exec('xdelta3 -d -s original patch new 2>&1', $output, $ret);
 					if ($ret) {
 						if ($ret == 2) {
-							Z_HTTP::e400("Invalid delta");
+							throw new Exception("Invalid delta", Z_ERROR_INVALID_INPUT);
 						}
 						throw new Exception("Error applying patch ($ret): " . implode("\n", $output));
 					}
@@ -304,19 +304,20 @@ class Zotero_S3 {
 			// Check MD5 hash
 			if (md5_file("new") != $info->hash) {
 				$cleanup();
-				Z_HTTP::e409("Patched file does not match hash");
+				throw new HTTPException("Patched file does not match hash", 409);
 			}
 			
 			// Check file size
 			if (filesize("new") != $info->size) {
 				$cleanup();
-				Z_HTTP::e409("Patched file size does not match (" . filesize("new") . " != {$info->size})");
+				throw new HTTPException("Patched file size does not match "
+						. "(" . filesize("new") . " != {$info->size})", 409);
 			}
 			
 			// If ZIP, make sure it's a ZIP
 			if ($info->zip && file_get_contents("new", false, null, 0, 4) != "PK" . chr(03) . chr(04)) {
 				$cleanup();
-				Z_HTTP::e409("Patched file is not a ZIP file");
+				throw new HTTPException("Patched file is not a ZIP file", 409);
 			}
 			
 			// Upload to S3
@@ -437,12 +438,16 @@ class Zotero_S3 {
 	}
 	
 	
-	public static function updateFileItemInfo($item, $storageFileID, Zotero_StorageFileInfo $info) {
+	public static function updateFileItemInfo($item, $storageFileID, Zotero_StorageFileInfo $info, $client=false) {
 		if (!$item->isImportedAttachment()) {
 			throw new Exception("Cannot add storage file for linked file/URL");
 		}
 		
 		Zotero_DB::beginTransaction();
+		
+		if (!$client) {
+			Zotero_Libraries::updateVersionAndTimestamp($item->libraryID);
+		}
 		
 		self::updateLastAdded($storageFileID);
 		
@@ -461,8 +466,15 @@ class Zotero_S3 {
 		}
 		$item->attachmentStorageHash = $info->hash;
 		$item->attachmentStorageModTime = $info->mtime;
-		$item->attachmentMIMEType = $info->contentType;
-		$item->attachmentCharset = $info->charset;
+		// contentType and charset may not have been included in the
+		// upload authorization, in which case we shouldn't overwrite
+		// any values that may already be set on the attachment
+		if (isset($info->contentType)) {
+			$item->attachmentMIMEType = $info->contentType;
+		}
+		if (isset($info->charset)) {
+			$item->attachmentCharset = $info->charset;
+		}
 		$item->save();
 		
 		Zotero_DB::commit();
@@ -662,64 +674,6 @@ class Zotero_S3 {
 			$info->filename
 		);
 		return $params;
-	}
-	
-	
-	public static function purgeUnusedFiles() {
-		throw new Exception("Now sharded");
-		
-		self::requireLibrary();
-		
-		// Get all used files and files that were last deleted more than a month ago
-		$sql = "SELECT MD5(CONCAT(hash, filename, zip)) AS file FROM storageFiles
-					JOIN storageFileItems USING (storageFileID)
-				UNION
-				SELECT MD5(CONCAT(hash, filename, zip)) AS file FROM storageFiles
-					WHERE lastDeleted > NOW() - INTERVAL 1 MONTH";
-		$files = Zotero_DB::columnQuery($sql);
-		
-		S3::setAuth(Z_CONFIG::$AWS_ACCESS_KEY, Z_CONFIG::$AWS_SECRET_KEY);
-		$s3Files = S3::getBucket(Z_CONFIG::$S3_BUCKET);
-		
-		$toPurge = array();
-		
-		foreach ($s3Files as $s3File) {
-			preg_match('/^([0-9a-g]{32})\/(c\/)?(.+)$/', $s3File['name'], $matches);
-			if (!$matches) {
-				throw new Exception("Invalid filename '" . $s3File['name'] . "'");
-			}
-			
-			$zip = $matches[2] ? '1' : '0';
-			
-			// Compressed file
-			$hash = md5($matches[1] . $matches[3] . $zip);
-			
-			if (!in_array($hash, $files)) {
-				$toPurge[] = array(
-					'hash' => $matches[1],
-					'filename' => $matches[3],
-					'zip' => $zip
-				);
-			}
-		}
-		
-		Zotero_DB::beginTransaction();
-		
-		foreach ($toPurge as $info) {
-			S3::deleteObject(
-				Z_CONFIG::$S3_BUCKET,
-				self::getPathPrefix($info['hash'], $info['zip']) . $info['filename']
-			);
-			
-			$sql = "DELETE FROM storageFiles WHERE hash=? AND filename=? AND zip=?";
-			Zotero_DB::query($sql, array($info['hash'], $info['filename'], $info['zip']));
-			
-			// TODO: maybe check to make sure associated files haven't just been created?
-		}
-		
-		Zotero_DB::commit();
-		
-		return sizeOf($toPurge);
 	}
 	
 	

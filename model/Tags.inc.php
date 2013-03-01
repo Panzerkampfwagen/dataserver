@@ -36,7 +36,8 @@ class Zotero_Tags extends Zotero_DataObjects {
 		'name' => '',
 		'type' => '',
 		'dateAdded' => '',
-		'dateModified' => ''
+		'dateModified' => '',
+		'version' => ''
 	);
 	
 	private static $tagsByID = array();
@@ -103,8 +104,12 @@ class Zotero_Tags extends Zotero_DataObjects {
 	/*
 	 * Returns array of all tagIDs for this tag (of all types)
 	 */
-	public static function getIDs($libraryID, $name) {
-		$sql = "SELECT tagID FROM tags WHERE libraryID=? AND name=?";
+	public static function getIDs($libraryID, $name, $caseInsensitive=false) {
+		$sql = "SELECT tagID FROM tags WHERE libraryID=? AND name";
+		if ($caseInsensitive) {
+			$sql .= " COLLATE utf8_general_ci ";
+		}
+		$sql .= "=?";
 		$tagIDs = Zotero_DB::columnQuery($sql, array($libraryID, $name), Zotero_Shards::getByLibraryID($libraryID));
 		if (!$tagIDs) {
 			return array();
@@ -113,9 +118,10 @@ class Zotero_Tags extends Zotero_DataObjects {
 	}
 	
 	
-
-	public static function getAllAdvanced($libraryID, $params) {
-		$results = array('objects' => array(), 'total' => 0);
+	public static function search($libraryID, $params) {
+		$results = array('results' => array(), 'total' => 0);
+		
+		$shardID = Zotero_Shards::getByLibraryID($libraryID);
 		
 		$sql = "SELECT SQL_CALC_FOUND_ROWS tagID FROM tags ";
 		if (!empty($params['order']) && $params['order'] == 'numItems') {
@@ -123,6 +129,25 @@ class Zotero_Tags extends Zotero_DataObjects {
 		}
 		$sql .= "WHERE libraryID=? ";
 		$sqlParams = array($libraryID);
+		
+		// Pass a list of tagIDs, for when the initial search is done via SQL
+		$tagIDs = !empty($params['tagIDs']) ? $params['tagIDs'] : array();
+		// Filter for specific tags with "?tag=foo || bar"
+		$tagNames = !empty($params['tag']) ? explode(' || ', $params['tag']): array();
+		
+		if ($tagIDs) {
+			$sql .= "AND tagID IN ("
+					. implode(', ', array_fill(0, sizeOf($tagIDs), '?'))
+					. ") ";
+			$sqlParams = array_merge($sqlParams, $tagIDs);
+		}
+		
+		if ($tagNames) {
+			$sql .= "AND `name` IN ("
+					. implode(', ', array_fill(0, sizeOf($tagNames), '?'))
+					. ") ";
+			$sqlParams = array_merge($sqlParams, $tagNames);
+		}
 		
 		if (!empty($params['q'])) {
 			if (!is_array($params['q'])) {
@@ -159,6 +184,11 @@ class Zotero_Tags extends Zotero_DataObjects {
 			}
 		}
 		
+		if (!empty($params['newer'])) {
+			$sql .= "AND version > ? ";
+			$sqlParams[] = $params['newer'];
+		}
+		
 		if (!empty($params['order'])) {
 			$order = $params['order'];
 			if ($order == 'title') {
@@ -182,8 +212,6 @@ class Zotero_Tags extends Zotero_DataObjects {
 			$sqlParams[] = $params['limit'];
 		}
 		
-		$shardID = Zotero_Shards::getByLibraryID($libraryID);
-		
 		$ids = Zotero_DB::columnQuery($sql, $sqlParams, $shardID);
 		
 		if ($ids) {
@@ -193,7 +221,7 @@ class Zotero_Tags extends Zotero_DataObjects {
 			foreach ($ids as $id) {
 				$tags[] = Zotero_Tags::get($libraryID, $id);
 			}
-			$results['objects'] = $tags;
+			$results['results'] = $tags;
 		}
 		
 		return $results;
@@ -235,7 +263,7 @@ class Zotero_Tags extends Zotero_DataObjects {
 	 * @param	int					$libraryID	Library ID
 	 * @return	Zotero_Tag						Zotero tag object
 	 */
-	public static function convertXMLToTag(DOMElement $xml) {
+	public static function convertXMLToTag(DOMElement $xml, &$itemKeysToUpdate) {
 		$libraryID = (int) $xml->getAttribute('libraryID');
 		$tag = self::getByLibraryAndKey($libraryID, $xml->getAttribute('key'));
 		if (!$tag) {
@@ -249,24 +277,29 @@ class Zotero_Tags extends Zotero_DataObjects {
 		$tag->dateAdded = $xml->getAttribute('dateAdded');
 		$tag->dateModified = $xml->getAttribute('dateModified');
 		
+		$dataChanged = $tag->hasChanged();
+		
 		$itemKeys = $xml->getElementsByTagName('items');
+		$oldKeys = $tag->getLinkedItems(true);
 		if ($itemKeys->length) {
-			$itemKeys = explode(' ', $itemKeys->item(0)->nodeValue);
-			$itemIDs = array();
-			foreach ($itemKeys as $key) {
-				$item = Zotero_Items::getByLibraryAndKey($libraryID, $key);
-				if (!$item) {
-					// Return a specific error for a wrong-library tag issue that I can't reproduce
-					throw new Exception("Linked item $key of tag $libraryID/$tag->key not found", Z_ERROR_TAG_LINKED_ITEM_NOT_FOUND);
-					//throw new Exception("Linked item $key of tag $libraryID/$tag->key not found", Z_ERROR_ITEM_NOT_FOUND);
-				}
-				$itemIDs[] = $item->id;
-			}
-			$tag->setLinkedItems($itemIDs);
+			$newKeys = explode(' ', $itemKeys->item(0)->nodeValue);
 		}
 		else {
-			$tag->setLinkedItems(array());
+			$newKeys = array();
 		}
+		$addKeys = array_diff($newKeys, $oldKeys);
+		$removeKeys = array_diff($oldKeys, $newKeys);
+		
+		// If the data has changed, all old and new items need to change
+		if ($dataChanged) {
+			$itemKeysToUpdate = array_merge($oldKeys, $addKeys);
+		}
+		// Otherwise, only update items that are being added or removed
+		else {
+			$itemKeysToUpdate = array_merge($addKeys, $removeKeys);
+		}
+		
+		$tag->setLinkedItems($newKeys);
 		return $tag;
 	}
 	

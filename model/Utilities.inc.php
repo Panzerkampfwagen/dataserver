@@ -39,7 +39,8 @@ class Zotero_Utilities {
 		$numbers = array('2','3','4','5','6','7','8','9');
 		
 		switch ($mode) {
-			// Special case for object ids, which are inadvertently missing 'L' and 'Y'
+			// Special case for object ids, which don't use 'O'
+			// (and are inadvertently missing 'L' and 'Y')
 			case 'key':
 				$characters = array_merge(
 					array('A','B','C','D','E','F','G','H','I','J','K','M','N','P','Q','R','S','T','U','V','W','X','Z'),
@@ -109,6 +110,20 @@ class Zotero_Utilities {
 		return $str;
 	}
     
+	
+	public static function formatJSON($jsonObj, $pretty=false) {
+		$mask = JSON_HEX_TAG|JSON_HEX_AMP;
+		if ($pretty) {
+			$json = self::json_encode_pretty($jsonObj, $mask);
+		}
+		else {
+			$json = json_encode($jsonObj, $mask);
+		}
+		// Until JSON_UNESCAPED_SLASHES is available
+		$json = str_replace('\\/', '/', $json);
+		return $json;
+	}
+	
     
     // By umbrae on http://us2.php.net/json_encode
 	public static function json_encode_pretty($json_obj, $mask=false) {
@@ -181,6 +196,14 @@ class Zotero_Utilities {
 		}
 	
 		return $new_json;
+	}
+	
+	
+	public static function getObjectTypeFromObject($object) {
+		if (!preg_match("/(Item|Collection|Search)$/", get_class($object), $matches)) {
+			throw new Exception("Invalid object type");
+		}
+		return strtolower($matches[0]);
 	}
 }
 ?>

@@ -1,4 +1,32 @@
 <?php
+<<<<<<< HEAD
+=======
+/*
+    ***** BEGIN LICENSE BLOCK *****
+    
+    This file is part of the Zotero Data Server.
+    
+    Copyright © 2011 Center for History and New Media
+                     George Mason University, Fairfax, Virginia, USA
+                     http://zotero.org
+    
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+    
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Affero General Public License for more details.
+    
+    You should have received a copy of the GNU Affero General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+    
+    ***** END LICENSE BLOCK *****
+*/
+
+>>>>>>> upstream/master
 class Zotero_Attachments {
 	private static $cacheTime = 60; // seconds to cache extracted ZIP files
 	
@@ -51,8 +79,6 @@ class Zotero_Attachments {
 		$realFilename = urlencode($realFilename);
 		
 		$docroot = Z_CONFIG::$ATTACHMENT_SERVER_DOCROOT;
-		
-		//Z_Core::$debug = true;
 		
 		// Check memcached to see if file is already extracted
 		$key = "attachmentServerString_" . $storageFileID . "_" . $mtime;

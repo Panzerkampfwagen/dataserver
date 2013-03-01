@@ -369,12 +369,27 @@ class Zotero_Key {
 			throw new Exception("Key not loaded");
 		}
 		
-		$sql = "UPDATE `keys` SET lastUsed=NOW() WHERE keyID=?";
-		Zotero_DB::query($sql, $this->id);
-		
 		$ip = IPAddress::getIP();
-		$sql = "INSERT INTO keyAccessLog (keyID, ipAddress) VALUES (?, INET_ATON(?))";
-		Zotero_DB::query($sql, array($this->id, $ip));
+		
+		// If we already logged access by this key from this IP address
+		// in the last minute, don't do it again
+		$cacheKey = "keyAccessLogged_" . $this->id . "_" . md5($ip);
+		if (Z_Core::$MC->get($cacheKey)) {
+			return;
+		}
+		
+		try {
+			$sql = "UPDATE `keys` SET lastUsed=NOW() WHERE keyID=?";
+			Zotero_DB::query($sql, $this->id);
+			
+			$sql = "REPLACE INTO keyAccessLog (keyID, ipAddress) VALUES (?, INET_ATON(?))";
+			Zotero_DB::query($sql, array($this->id, $ip));
+		}
+		catch (Exception $e) {
+			error_log("WARNING: " . $e);
+		}
+		
+		Z_Core::$MC->set($cacheKey, "1", 60);
 	}
 	
 	
@@ -412,7 +427,7 @@ class Zotero_Key {
 	
 	
 	private function getRecentIPs() {
-		$sql = "SELECT DISTINCT INET_NTOA(ipAddress) FROM keyAccessLog WHERE keyID=?
+		$sql = "SELECT INET_NTOA(ipAddress) FROM keyAccessLog WHERE keyID=?
 				ORDER BY timestamp DESC LIMIT 5";
 		$ips = Zotero_DB::columnQuery($sql, $this->id);
 		if (!$ips) {

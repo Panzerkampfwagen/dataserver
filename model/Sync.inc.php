@@ -149,6 +149,9 @@ class Zotero_Sync {
 		$sql = "DELETE FROM syncUploadQueue WHERE sessionID=? AND finished IS NOT NULL";
 		Zotero_DB::query($sql, $sessionID);
 		
+		// Strip control characters in XML data
+		$xmldata = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $xmldata);
+		
 		Zotero_DB::beginTransaction();
 		
 		$sql = "INSERT INTO syncUploadQueue
@@ -263,15 +266,23 @@ class Zotero_Sync {
 		if (!$error) {
 			$timestamp = $doc->documentElement->getAttribute('timestamp');
 			
+			$xmldata = $doc->saveXML();
+			$size = strlen($xmldata);
+			
 			$sql = "UPDATE syncDownloadQueue SET finished=FROM_UNIXTIME(?), xmldata=? WHERE syncDownloadQueueID=?";
 			Zotero_DB::query(
 				$sql,
 				array(
 					$timestamp,
-					$doc->saveXML(),
+					$xmldata,
 					$row['syncDownloadQueueID']
 				)
 			);
+			
+			StatsD::increment("sync.process.download.queued.success");
+			StatsD::updateStats("sync.process.download.queued.size", $size);
+			StatsD::timing("sync.process.download.process", round((microtime(true) - $startedTimestamp) * 1000));
+			StatsD::timing("sync.process.download.total", max(0, time() - strtotime($row['added'])) * 1000);
 			
 			self::logDownload(
 				$row['userID'],
@@ -297,6 +308,7 @@ class Zotero_Sync {
 			$sql = "UPDATE syncDownloadQueue SET started=NULL, tries=tries+1 WHERE syncDownloadQueueID=?";
 			Zotero_DB::query($sql, $row['syncDownloadQueueID']);
 			$lockError = true;
+			StatsD::increment("sync.process.download.queued.errorTemporary");
 		}
 		// Save error
 		else {
@@ -312,6 +324,8 @@ class Zotero_Sync {
 					$row['syncDownloadQueueID']
 				)
 			);
+			
+			StatsD::increment("sync.process.download.queued.errorPermanent");
 			
 			self::logDownload(
 				$row['userID'],
@@ -432,6 +446,11 @@ class Zotero_Sync {
 				)
 			);
 			
+			StatsD::increment("sync.process.upload.success");
+			StatsD::updateStats("sync.process.upload.size", $row['dataLength']);
+			StatsD::timing("sync.process.upload.process", round((microtime(true) - $startedTimestamp) * 1000));
+			StatsD::timing("sync.process.upload.total", max(0, time() - strtotime($row['added'])) * 1000);
+			
 			try {
 				$sql = "INSERT INTO syncUploadProcessLog
 						(userID, dataLength, processorHost, processDuration, totalDuration, error)
@@ -458,14 +477,6 @@ class Zotero_Sync {
 			catch (Exception $e) {
 				Z_Core::logError($e);
 			}
-			
-			try {
-				// Index new items
-				Zotero_Processors::notifyProcessors('index');
-			}
-			catch (Exception $e) {
-				Z_Core::logError($e);
-			}
 		}
 		// Timeout/connection error
 		else if (
@@ -481,20 +492,20 @@ class Zotero_Sync {
 			$sql = "UPDATE syncUploadQueue SET started=NULL, tries=tries+1 WHERE syncUploadQueueID=?";
 			Zotero_DB::query($sql, $row['syncUploadQueueID']);
 			$lockError = true;
+			StatsD::increment("sync.process.upload.errorTemporary");
 		}
 		// Save error
 		else {
 			// As of PHP 5.3.2 we can't serialize objects containing SimpleXMLElements,
 			// and since the stack trace includes one, we have to catch this and
 			// manually reconstruct an exception
-			try {
-				$serialized = serialize($e);
-			}
-			catch (Exception $e2) {
-				//$id = substr(md5(uniqid(rand(), true)), 0, 10);
-				//file_put_contents("/tmp/uploadError_$id", $e);
-				$serialized = serialize(new Exception($msg, $e->getCode()));
-			}
+			$serialized = serialize(
+				new Exception(
+					// Strip invalid \xa0 (due to note sanitizing and &nbsp;?)
+					iconv("utf-8", "utf-8//IGNORE", $msg),
+					$e->getCode()
+				)
+			);
 			
 			Z_Core::logError($e);
 			$sql = "UPDATE syncUploadQueue SET finished=?, errorCode=?, errorMessage=? WHERE syncUploadQueueID=?";
@@ -507,6 +518,8 @@ class Zotero_Sync {
 					$row['syncUploadQueueID']
 				)
 			);
+			
+			StatsD::increment("sync.process.upload.errorPermanent");
 			
 			try {
 				$sql = "INSERT INTO syncUploadProcessLog
@@ -605,17 +618,26 @@ class Zotero_Sync {
 				}
 			}
 			
+			// Get long item data fields
 			$node = Zotero_Items::getLongDataValueFromXML($doc); // returns DOMNode rather than value
 			if ($node) {
+				$libraryID = $node->parentNode->getAttribute('libraryID');
+				$key = $node->parentNode->getAttribute('key');
+				if ($libraryID) {
+					$key = $libraryID . "/" . $key;
+				}
 				$fieldName = $node->getAttribute('name');
 				$fieldName = Zotero_ItemFields::getLocalizedString(null, $fieldName);
 				if ($fieldName) {
-					$start = "'$fieldName' field";
+					$start = "$fieldName field";
 				}
 				else {
 					$start = "Field";
 				}
-				throw new Exception("=$start value '" . mb_substr($node->nodeValue, 0, 50) . "...' too long");
+				throw new Exception(
+					"=$start value '" . mb_substr($node->nodeValue, 0, 75)
+					. "...' too long for item '$key'", Z_ERROR_FIELD_TOO_LONG
+				);
 			}
 		}
 		catch (Exception $e) {
@@ -841,7 +863,10 @@ class Zotero_Sync {
 			throw new Exception('$lastsync not provided');
 		}
 		
-		$key = md5(
+		require_once 'AWS-SDK/sdk.class.php';
+		$s3 = new AmazonS3();
+		
+		$s3Key = $apiVersion . "/" . md5(
 			Zotero_Users::getUpdateKey($userID)
 			. "_" . $lastsync
 			// Remove after 2.1 sync cutoff
@@ -849,48 +874,67 @@ class Zotero_Sync {
 			. "_" . self::$cacheVersion
 		);
 		
-		$suffix = "_" . $key[0];
-		
+		// Check S3 for file
 		try {
-			$sql = "SELECT xmldata FROM syncDownloadCache$suffix WHERE hash=?";
-			$xmldata = Zotero_Cache_DB::valueQuery($sql, $key);
+			$response = $s3->get_object(
+				Z_CONFIG::$S3_BUCKET_CACHE,
+				$s3Key,
+				array(
+					'curlopts' => array(
+						CURLOPT_FORBID_REUSE => true
+					)
+				)
+			);
+			if ($response->isOK()) {
+				$xmldata = $response->body;
+			}
+			else if ($response->status == 404) {
+				$xmldata = false;
+			}
+			else {
+				throw new Exception($response->status . " " . $response->body);
+			}
 		}
 		catch (Exception $e) {
-			Z_Core::logError("Warning: '" . $e->getMessage() . "' getting cached download");
+			Z_Core::logError("Warning: '" . $e->getMessage() . "' getting cached download from S3");
 			$xmldata = false;
 		}
 		
+		// Update the last-used timestamp in S3
 		if ($xmldata) {
-			try {
-				// Update the last-used timestamp
-				$sql = "UPDATE syncDownloadCache$suffix SET lastUsed=NOW() WHERE hash=?";
-				Zotero_Cache_DB::query($sql, $key);
-			}
-			catch (Exception $e) {
-				Z_Core::logError("Warning: '" . $e->getMessage() . "' updating cached download");
-			}
+			$response = $s3->update_object(Z_CONFIG::$S3_BUCKET_CACHE, $s3Key, array(
+				'meta' => array(
+					'last-used' => time()
+				)
+			));
 		}
-		
-		// Close cache db to avoid sleeping thread
-		Zotero_Cache_DB::close();
 		
 		return $xmldata;
 	}
 	
 	
-	public static function cacheDownload($userID, $lastsync, $apiVersion, $xmldata) {
-		$key = md5(
-			Zotero_Users::getUpdateKey($userID)
-			. "_" . $lastsync
+	public static function cacheDownload($userID, $updateKey, $lastsync, $apiVersion, $xmldata) {
+		require_once 'AWS-SDK/sdk.class.php';
+		$s3 = new AmazonS3();
+		
+		$s3Key = $apiVersion . "/" . md5(
+			$updateKey . "_" . $lastsync
 			// Remove after 2.1 sync cutoff
 			. ($apiVersion >= 9 ? "_" . $apiVersion : "")
 			. "_" . self::$cacheVersion
 		);
 		
-		$suffix = "_" . $key[0];
-		
-		$sql = "INSERT IGNORE INTO syncDownloadCache$suffix (hash, userID, lastsync, xmldata) VALUES (?,?,?,?)";
-		Zotero_Cache_DB::query($sql, array($key, $userID, $lastsync, $xmldata));
+		// Add to S3
+		$response = $s3->create_object(
+			Z_CONFIG::$S3_BUCKET_CACHE,
+			$s3Key,
+			array(
+				'body' => $xmldata
+			)
+		);
+		if (!$response->isOK()) {
+			throw new Exception($response->status . " " . $response->body);
+		}
 	}
 	
 	
@@ -976,13 +1020,6 @@ class Zotero_Sync {
 		
 		$e = @unserialize($row['errorMessage']);
 		
-		// In case it's not a valid exception for some reason, make one
-		//
-		// TODO: This can probably be removed after the transition
-		if (!($e instanceof Exception)) {
-			$e = new Exception($row['errorMessage'], $row['errorCode']);
-		}
-		
 		return array('timestamp' => $row['finished'], 'xmldata' => $row['xmldata'], 'exception' => $e);
 	}
 	
@@ -1027,10 +1064,15 @@ class Zotero_Sync {
 	private static function processDownloadInternal($userID, $lastsync, DOMDocument $doc, $syncDownloadQueueID=null, $syncDownloadProcessID=null) {
 		$apiVersion = (int) $doc->documentElement->getAttribute('version');
 		
+		if ($lastsync == 1) {
+			StatsD::increment("sync.process.download.full");
+		}
+		
 		try {
 			$cached = Zotero_Sync::getCachedDownload($userID, $lastsync, $apiVersion);
 			if ($cached) {
 				$doc->loadXML($cached);
+				StatsD::increment("sync.process.download.cache.hit");
 				return;
 			}
 		}
@@ -1043,6 +1085,7 @@ class Zotero_Sync {
 				$msg = "'$msg'";
 			}
 			Z_Core::logError("Warning: $msg getting cached download");
+			StatsD::increment("sync.process.download.cache.error");
 		}
 		
 		set_time_limit(1800);
@@ -1075,7 +1118,8 @@ class Zotero_Sync {
 			
 			$doc->documentElement->setAttribute('userID', $userID);
 			$doc->documentElement->setAttribute('defaultLibraryID', $userLibraryID);
-			$doc->documentElement->setAttribute('updateKey', Zotero_Users::getUpdateKey($userID));
+			$updateKey = Zotero_Users::getUpdateKey($userID);
+			$doc->documentElement->setAttribute('updateKey', $updateKey);
 			
 			// Get libraries with update times >= $timestamp
 			$updatedLibraryIDs = array();
@@ -1128,7 +1172,6 @@ class Zotero_Sync {
 					$updatedIDsByLibraryID = call_user_func(array($className, 'getUpdated'), $userID, $lastsync, $updatedLibraryIDs);
 					if ($updatedIDsByLibraryID) {
 						$node = $doc->createElement($names);
-						$updatedNode->appendChild($node);
 						foreach ($updatedIDsByLibraryID as $libraryID=>$ids) {
 							if ($name == 'creator') {
 								$updatedCreators[$libraryID] = $ids;
@@ -1161,6 +1204,10 @@ class Zotero_Sync {
 										$node->appendChild($xmlElement);
 									}
 									else if ($name == 'relation') {
+										// Skip new-style related items
+										if ($obj->predicate == 'dc:relation') {
+											continue;
+										}
 										$xmlElement = call_user_func(array($className, "convert{$Name}ToXML"), $obj);
 										if ($apiVersion <= 8) {
 											unset($xmlElement['libraryID']);
@@ -1181,6 +1228,9 @@ class Zotero_Sync {
 									$node->appendChild($newNode);
 								}
 							}
+						}
+						if ($node->hasChildNodes()) {
+							$updatedNode->appendChild($node);
 						}
 					}
 				}
@@ -1262,7 +1312,7 @@ class Zotero_Sync {
 		// Cache response if response isn't empty
 		try {
 			if ($doc->documentElement->firstChild->hasChildNodes()) {
-				self::cacheDownload($userID, $lastsync, $apiVersion, $doc->saveXML());
+				self::cacheDownload($userID, $updateKey, $lastsync, $apiVersion, $doc->saveXML());
 			}
 		}
 		catch (Exception $e) {
@@ -1298,10 +1348,12 @@ class Zotero_Sync {
 		}
 		
 		try {
-			Z_Core::$MC->begin();
 			Zotero_DB::beginTransaction();
 			
 			// Mark libraries as updated
+			foreach ($affectedLibraries as $libraryID) {
+				Zotero_Libraries::updateVersion($libraryID);
+			}
 			$timestamp = Zotero_Libraries::updateTimestamps($affectedLibraries);
 			Zotero_DB::registerTransactionTimestamp($timestamp);
 			
@@ -1311,6 +1363,8 @@ class Zotero_Sync {
 			//if (!Zotero_Libraries::setTimestampLock($affectedLibraries, $timestamp)) {
 			//	throw new Exception("Library timestamp already used", Z_ERROR_LIBRARY_TIMESTAMP_ALREADY_USED);
 			//}
+			
+			$modifiedItems = array();
 			
 			// Add/update creators
 			if ($xml->creators) {
@@ -1331,7 +1385,16 @@ class Zotero_Sync {
 						
 						$creatorObj = Zotero_Creators::convertXMLToCreator($xmlElement);
 						$addedLibraryIDs[] = $creatorObj->libraryID;
-						$creatorObj->save();
+						
+						$changed = $creatorObj->save();
+						
+						// If the creator changed, we need to update all linked items
+						if ($changed) {
+							$modifiedItems = array_merge(
+								$modifiedItems,
+								$creatorObj->getLinkedItems()
+							);
+						}
 					}
 				}
 				catch (Exception $e) {
@@ -1356,35 +1419,33 @@ class Zotero_Sync {
 			}
 			
 			// Add/update items
+			$savedItems = array();
 			if ($xml->items) {
 				$childItems = array();
-				$relatedItemsStore = array();
 				
 				// DOM
-				$keys = array();
 				$xmlElements = dom_import_simplexml($xml->items);
 				$xmlElements = $xmlElements->getElementsByTagName('item');
 				foreach ($xmlElements as $xmlElement) {
+					$libraryID = (int) $xmlElement->getAttribute('libraryID');
 					$key = $xmlElement->getAttribute('key');
-					if (isset($keys[$key])) {
-						throw new Exception("Item $key already processed");
-					}
-					$keys[$key] = true;
 					
-					$missing = Zotero_Items::removeMissingRelatedItems($xmlElement);
+					if (isset($savedItems[$libraryID . "/" . $key])) {
+						throw new Exception("Item $libraryID/$key already processed");
+					}
+					
 					$itemObj = Zotero_Items::convertXMLToItem($xmlElement);
-					
-					if ($missing) {
-						$relatedItemsStore[$itemObj->libraryID . '_' . $itemObj->key] = $missing;
-					}
 					
 					if (!$itemObj->getSourceKey()) {
 						try {
-							$itemObj->save($userID);
+							$modified = $itemObj->save($userID);
+							if ($modified) {
+								$savedItems[$libraryID . "/" . $key] = true;
+							}
 						}
 						catch (Exception $e) {
 							if (strpos($e->getMessage(), 'libraryIDs_do_not_match') !== false) {
-								throw new Exception($e->getMessage() . " (" . $itemObj->key . ")");
+								throw new Exception($e->getMessage() . " ($key)");
 							}
 							throw ($e);
 						}
@@ -1393,26 +1454,20 @@ class Zotero_Sync {
 						$childItems[] = $itemObj;
 					}
 				}
-				unset($keys);
 				unset($xml->items);
 				
 				while ($childItem = array_shift($childItems)) {
-					$childItem->save($userID);
-				}
-				
-				// Add back related items (which now exist)
-				foreach ($relatedItemsStore as $itemLibraryKey=>$relset) {
-					$lk = explode('_', $itemLibraryKey);
-					$libraryID = $lk[0];
-					$key = $lk[1];
-					$item = Zotero_Items::getByLibraryAndKey($libraryID, $key);
-					foreach ($relset as $relKey) {
-						$relItem = Zotero_Items::getByLibraryAndKey($libraryID, $relKey);
-						$item->addRelatedItem($relItem->id);
+					$libraryID = $childItem->libraryID;
+					$key = $childItem->key;
+					if (isset($savedItems[$libraryID . "/" . $key])) {
+						throw new Exception("Item $libraryID/$key already processed");
 					}
-					$item->save();
+					
+					$modified = $childItem->save($userID);
+					if ($modified) {
+						$savedItems[$libraryID . "/" . $key] = true;
+					}
 				}
-				unset($relatedItemsStore);
 			}
 			
 			// Add/update collections
@@ -1467,7 +1522,7 @@ class Zotero_Sync {
 							}
 							$ids[] = $item->id;
 						}
-						$collection['obj']->setChildItems($ids);
+						$collection['obj']->setItems($ids);
 					}
 				}
 				unset($collectionSets);
@@ -1499,13 +1554,30 @@ class Zotero_Sync {
 				$xmlElements = dom_import_simplexml($xml->tags);
 				$xmlElements = $xmlElements->getElementsByTagName('tag');
 				foreach ($xmlElements as $xmlElement) {
+					$libraryID = (int) $xmlElement->getAttribute('libraryID');
 					$key = $xmlElement->getAttribute('key');
-					if (isset($keys[$key])) {
-						throw new Exception("Tag $key already processed");
-					}
-					$keys[$key] = true;
 					
-					$tagObj = Zotero_Tags::convertXMLToTag($xmlElement);
+					$lk = $libraryID . "/" . $key;
+					if (isset($keys[$lk])) {
+						throw new Exception("Tag $lk already processed");
+					}
+					$keys[$lk] = true;
+					
+					$itemKeysToUpdate = array();
+					$tagObj = Zotero_Tags::convertXMLToTag($xmlElement, $itemKeysToUpdate);
+					
+					// We need to update removed items, added items, and,
+					// if the tag itself has changed, existing items
+					$modifiedItems = array_merge(
+						$modifiedItems,
+						array_map(
+							function ($key) use ($libraryID) {
+								return $libraryID . "/" . $key;
+							},
+							$itemKeysToUpdate
+						)
+					);
+					
 					$tagObj->save(true);
 				}
 				unset($keys);
@@ -1552,19 +1624,82 @@ class Zotero_Sync {
 				
 				// Delete tags
 				if ($xml->deleted->tags) {
+					$xmlElements = dom_import_simplexml($xml->deleted->tags);
+					$xmlElements = $xmlElements->getElementsByTagName('tag');
+					foreach ($xmlElements as $xmlElement) {
+						$libraryID = (int) $xmlElement->getAttribute('libraryID');
+						$key = $xmlElement->getAttribute('key');
+						
+						$tagObj = Zotero_Tags::getByLibraryAndKey($libraryID, $key);
+						if (!$tagObj) {
+							continue;
+						}
+						// We need to update all items on the deleted tag
+						$modifiedItems = array_merge(
+							$modifiedItems,
+							array_map(
+								function ($key) use ($libraryID) {
+									return $libraryID . "/" . $key;
+								},
+								$tagObj->getLinkedItems(true)
+							)
+						);
+					}
+					
 					Zotero_Tags::deleteFromXML($xml->deleted->tags);
 				}
 				
-				// Delete tags
+				// Delete relations
 				if ($xml->deleted->relations) {
 					Zotero_Relations::deleteFromXML($xml->deleted->relations);
 				}
 			}
 			
-			self::removeUploadProcess($processID);
+			$toUpdate = array();
+			foreach ($modifiedItems as $item) {
+				// libraryID/key string
+				if (is_string($item)) {
+					if (isset($savedItems[$item])) {
+						continue;
+					}
+					$savedItems[$item] = true;
+					list($libraryID, $key) = explode("/", $item);
+					$item = Zotero_Items::getByLibraryAndKey($libraryID, $key);
+					if (!$item) {
+						// Item was deleted
+						continue;
+					}
+				}
+				// Zotero_Item
+				else {
+					$lk = $item->libraryID . "/" . $item->key;
+					if (isset($savedItems[$lk])) {
+						continue;
+					}
+					$savedItems[$lk] = true;
+				}
+				$toUpdate[] = $item;
+			}
+			Zotero_Items::updateVersions($toUpdate, $userID);
+			unset($savedItems);
+			unset($modifiedItems);
+			
+			try {
+				self::removeUploadProcess($processID);
+			}
+			catch (Exception $e) {
+				if (strpos($e->getMessage(), 'MySQL server has gone away') !== false) {
+					// Reconnect
+					error_log("Reconnecting to MySQL master");
+					Zotero_DB::close();
+					self::removeUploadProcess($processID);
+				}
+				else {
+					throw ($e);
+				}
+			}
 			
 			Zotero_DB::commit();
-			Z_Core::$MC->commit();
 			
 			if ($profile) {
 				$shardID = Zotero_Shards::getByUserID($userID);
@@ -1576,7 +1711,6 @@ class Zotero_Sync {
 			return $timestamp + 1;
 		}
 		catch (Exception $e) {
-			Z_Core::$MC->rollback();
 			Zotero_DB::rollback(true);
 			self::removeUploadProcess($processID);
 			throw $e;
@@ -1735,7 +1869,9 @@ class Zotero_Sync {
 		foreach ($shardLibraryIDs as $shardID=>$libraryIDs) {
 			$sql = "SELECT COUNT(*) FROM syncDeleteLogKeys WHERE libraryID IN ("
 					. implode(', ', array_fill(0, sizeOf($libraryIDs), '?'))
-					. ")";
+					. ") "
+					// API only
+					. "AND objectType != 'tagName'";
 			$params = $libraryIDs;
 			if ($timestamp) {
 				$sql .= " AND timestamp >= FROM_UNIXTIME(?)";
@@ -1798,7 +1934,9 @@ class Zotero_Sync {
 			$sql = "SELECT libraryID, objectType, `key`, timestamp
 					FROM syncDeleteLogKeys WHERE libraryID IN ("
 					. implode(', ', array_fill(0, sizeOf($libraryIDs), '?'))
-					. ")";
+					. ")"
+					// API only
+					. " AND objectType != 'tagName'";
 			$params = $libraryIDs;
 			if ($timestamp) {
 				$sql .= " AND timestamp >= FROM_UNIXTIME(?)";

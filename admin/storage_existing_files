@@ -1,6 +1,13 @@
 #!/usr/bin/php
+<<<<<<< HEAD
 <?php
+=======
+<?
+//
+>>>>>>> upstream/master
 // Populate storageFilesExisting with the ids of all files on all shards
+//
+// This needs to be run before storage_purge.
 
 set_include_path("../include");
 require("header.inc.php");

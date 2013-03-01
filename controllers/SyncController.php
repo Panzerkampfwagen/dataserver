@@ -55,7 +55,7 @@ class SyncController extends Controller {
 		}
 	}
 	
-	public function __construct($action, $settings, $extra) {
+	public function init($extra) {
 		require_once('../model/Error.inc.php');
 		
 		if ($this->profile) {
@@ -88,7 +88,7 @@ class SyncController extends Controller {
 		}
 		
 		if (empty($_REQUEST['version'])) {
-			if ($action == 'index') {
+			if ($this->action == 'index') {
 				echo "Nothing to see here.";
 				exit;
 			}
@@ -109,6 +109,14 @@ class SyncController extends Controller {
 			}
 			else if (ToolkitVersionComparator::compare($_SERVER['HTTP_X_ZOTERO_VERSION'], "2.0rc.r5716") < 0) {
 				$this->error(400, 'UPGRADE_REQUIRED', $upgradeMessage);
+			}
+			else if (isset($_SERVER['HTTP_USER_AGENT'])
+					&& (strpos($_SERVER['HTTP_USER_AGENT'], "Firefox/17") !== false
+						|| strpos($_SERVER['HTTP_USER_AGENT'], "Firefox/18") !== false
+						|| strpos($_SERVER['HTTP_USER_AGENT'], "Firefox/19") !== false
+						|| strpos($_SERVER['HTTP_USER_AGENT'], "Firefox/20") !== false)
+					&& ToolkitVersionComparator::compare($_SERVER['HTTP_X_ZOTERO_VERSION'], "3.0.9") < 0) {
+				$this->error(400, 'UPGRADE_REQUIRED', "Your version of Zotero is not compatible with Firefox 17 or later. Please upgrade to Zotero 3.0.10 or later from zotero.org.");
 			}
 		}
 		
@@ -141,11 +149,14 @@ class SyncController extends Controller {
 		
 		$userID = Zotero_Users::authenticate('password', $authData);
 		if (!$userID) {
+			StatsD::increment("sync.login.failure");
 			if (isset($_SERVER['HTTP_X_ZOTERO_VERSION']) && $_SERVER['HTTP_X_ZOTERO_VERSION'] == "2.0b6") {
 				die ("Username/password not accepted");
 			}
 			$this->error(403, 'INVALID_LOGIN', "Username/password not accepted");
 		}
+		
+		StatsD::increment("sync.login.success");
 		
 		$sessionID = md5($userID . uniqid(rand(), true) . $password);
 		$ip = IPAddress::getIP();
@@ -297,8 +308,16 @@ class SyncController extends Controller {
 						0,
 						$duration,
 						$duration,
-						0
+						(int) !$this->responseXML
 					);
+					
+					StatsD::increment("sync.process.download.cache.hit");
+					
+					if (!$this->responseXML) {
+						$msg = "Error parsing cached XML for user " . $this->userID;
+						error_log($msg);
+						$this->handleUpdatedError(new Exception($msg));
+					}
 					
 					$this->end();
 				}
@@ -312,6 +331,7 @@ class SyncController extends Controller {
 					$msg = "'$msg'";
 				}
 				Z_Core::logError("Warning: $msg getting cached download");
+				StatsD::increment("sync.process.download.cache.error");
 			}
 			
 			try {
@@ -345,8 +365,12 @@ class SyncController extends Controller {
 				try {
 					Zotero_Sync::processDownload($this->userID, $lastsync, $doc);
 					$this->responseXML = simplexml_import_dom($doc);
+					
+					StatsD::increment("sync.process.download.immediate.success");
 				}
 				catch (Exception $e) {
+					StatsD::increment("sync.process.download.immediate.error");
+					
 					$this->handleUpdatedError($e);
 				}
 			}
@@ -412,7 +436,9 @@ class SyncController extends Controller {
 			}
 			$str .= "Error: RELAX NG validation failed\n\n";
 			$str .= $xmldata;
-			file_put_contents(Z_CONFIG::$SYNC_ERROR_PATH . $id, $str);
+			if (!file_put_contents(Z_CONFIG::$SYNC_ERROR_PATH . $id, $str)) {
+				error_log("Unable to save error report to " . Z_CONFIG::$SYNC_ERROR_PATH . $id);
+			}
 			$this->error(500, 'INVALID_UPLOAD_DATA', "Uploaded data not well-formed (Report ID: $id)");
 		}
 		restore_error_handler();
@@ -504,6 +530,8 @@ class SyncController extends Controller {
 				. "is locked for syncing. Please wait for all related syncs to complete.";
 			$this->error(400, 'SYNC_LOCKED', $message);
 		}
+		
+		StatsD::increment("sync.clear");
 		
 		Zotero_Users::clearAllData($this->userID);
 		$this->responseXML->addChild('cleared');
@@ -622,7 +650,12 @@ class SyncController extends Controller {
 	
 	
 	private function handleUpdatedError(Exception $e) {
-		unset($this->responseXML->updated);
+		if ($this->responseXML) {
+			unset($this->responseXML->updated);
+		}
+		else {
+			$this->responseXML = Zotero_Sync::getResponseXML($this->apiVersion);
+		}
 		
 		$msg = $e->getMessage();
 		
@@ -634,9 +667,10 @@ class SyncController extends Controller {
 				|| strpos($msg, "Deadlock found when trying to get lock; try restarting transaction") !== false
 				|| strpos($msg, "Too many connections") !== false
 				|| strpos($msg, "Can't connect to MySQL server") !==false) {
-			Z_Core::logError("WARNING: $msg -- sending sync wait");
+			$waitTime = $this->getWaitTime($this->sessionID);
+			Z_Core::logError("WARNING: $msg -- sending sync wait ($waitTime)");
 			$locked = $this->responseXML->addChild('locked');
-			$locked['wait'] = $this->getWaitTime($this->sessionID);
+			$locked['wait'] = $waitTime;
 			$this->end();
 		}
 		
@@ -652,11 +686,12 @@ class SyncController extends Controller {
 			}
 			$str .= "Error: " . $e;
 			$str .= $this->responseXML->saveXML();
-			file_put_contents(Z_CONFIG::$SYNC_ERROR_PATH . $id, $str);
+			if (!file_put_contents(Z_CONFIG::$SYNC_ERROR_PATH . $id, $str)) {
+				error_log("Unable to save error report to " . Z_CONFIG::$SYNC_ERROR_PATH . $id);
+			}
 			
-			$this->error(500, 'INVALID_OUTPUT', "Invalid output from server (Report ID: $id)");
+			$this->error(500, 'INVALID_OUTPUT', "Invalid response from server (Report ID: $id)");
 		}
-
 	}
 	
 	
@@ -674,46 +709,50 @@ class SyncController extends Controller {
 		
 		switch ($e->getCode()) {
 			case Z_ERROR_TAG_TOO_LONG:
+			case Z_ERROR_COLLECTION_TOO_LONG:
 				break;
 			
 			default:
 				Z_Core::logError($msg);
 		}
 		
-		if (true || !$explicit) {
-			if (Z_ENV_TESTING_SITE) {
-				switch ($e->getCode()) {
-					case Z_ERROR_COLLECTION_NOT_FOUND:
-					case Z_ERROR_CREATOR_NOT_FOUND:
-					case Z_ERROR_ITEM_NOT_FOUND:
-					case Z_ERROR_TAG_TOO_LONG:
-					case Z_ERROR_LIBRARY_ACCESS_DENIED:
-					case Z_ERROR_TAG_LINKED_ITEM_NOT_FOUND:
-						break;
-					
-					default:
-						throw ($e);
-				}
+		if (!$explicit && Z_ENV_TESTING_SITE) {
+			switch ($e->getCode()) {
+				case Z_ERROR_COLLECTION_NOT_FOUND:
+				case Z_ERROR_CREATOR_NOT_FOUND:
+				case Z_ERROR_ITEM_NOT_FOUND:
+				case Z_ERROR_TAG_TOO_LONG:
+				case Z_ERROR_LIBRARY_ACCESS_DENIED:
+				case Z_ERROR_TAG_LINKED_ITEM_NOT_FOUND:
+					break;
 				
-				$id = 'N/A';
+				default:
+					throw ($e);
 			}
-			else {
-				$id = substr(md5(uniqid(rand(), true)), 0, 8);
-				$str = date("D M j G:i:s T Y") . "\n";
-				$str .= "IP address: " . $_SERVER['REMOTE_ADDR'] . "\n";
-				if (isset($_SERVER['HTTP_X_ZOTERO_VERSION'])) {
-					$str .= "Version: " . $_SERVER['HTTP_X_ZOTERO_VERSION'] . "\n";
-				}
-				$str .= $e;
-				switch ($e->getCode()) {
-					// Don't log uploaded data for some errors
-					case Z_ERROR_TAG_TOO_LONG:
-						break;
-					
-					default:
-						$str .= "\n\n" . $xmldata;
-				}
-				file_put_contents(Z_CONFIG::$SYNC_ERROR_PATH . $id, $str);
+			
+			$id = 'N/A';
+		}
+		else {
+			$id = substr(md5(uniqid(rand(), true)), 0, 8);
+			$str = date("D M j G:i:s T Y") . "\n";
+			$str .= "IP address: " . $_SERVER['REMOTE_ADDR'] . "\n";
+			if (isset($_SERVER['HTTP_X_ZOTERO_VERSION'])) {
+				$str .= "Version: " . $_SERVER['HTTP_X_ZOTERO_VERSION'] . "\n";
+			}
+			$str .= $e;
+			switch ($e->getCode()) {
+				// Don't log uploaded data for some errors
+				case Z_ERROR_TAG_TOO_LONG:
+				case Z_ERROR_FIELD_TOO_LONG:
+				case Z_ERROR_NOTE_TOO_LONG:
+				case Z_ERROR_COLLECTION_TOO_LONG:
+					break;
+				
+				default:
+					$str .= "\n\n" . $xmldata;
+			}
+			if (!file_put_contents(Z_CONFIG::$SYNC_ERROR_PATH . $id, $str)) {
+				error_log("Unable to save error report to " . Z_CONFIG::$SYNC_ERROR_PATH . $id);
 			}
 		}
 		
@@ -760,6 +799,70 @@ class SyncController extends Controller {
 						"Collection '" . mb_substr($name, 0, 50) . "…' too long",
 						array(),
 						array("collection" => $name)
+					);
+				}
+				break;
+			
+			case Z_ERROR_NOTE_TOO_LONG:
+				preg_match("/Note '(.+)' too long(?: for item '(.+)\/(.+)')?/s", $msg, $matches);
+				if ($matches) {
+					$name = $matches[1];
+					if (isset($matches[2])) {
+						$libraryID = (int) $matches[2];
+						$itemKey = $matches[3];
+						if (Zotero_Libraries::getType($libraryID) == 'group') {
+							$groupID = Zotero_Groups::getGroupIDFromLibraryID($libraryID);
+							$group = Zotero_Groups::get($groupID);
+							$libraryName = $group->name;
+						}
+						else {
+							$libraryName = false;
+						}
+					}
+					$this->error(400, "ERROR_PROCESSING_UPLOAD_DATA",
+						"The note '" . mb_substr($name, 0, 50) . "…' in "
+						. ($libraryName === false
+							? "your library "
+							: "the group '$libraryName' ")
+						. "is too long to sync to zotero.org.\n\n"
+						. "Search for the excerpt above or copy and paste "
+						. "'$itemKey' into the Zotero search bar. "
+						. "Shorten the note, or delete it and empty the Zotero "
+						. "trash, and then try syncing again."
+					);
+				}
+				break;
+			
+			case Z_ERROR_FIELD_TOO_LONG:
+				preg_match("/(.+) field value '(.+)\.\.\.' too long(?: for item '(.+)')?/s", $msg, $matches);
+				if ($matches) {
+					$fieldName = $matches[1];
+					$value = $matches[2];
+					if (isset($matches[3])) {
+						$parts = explode("/", $matches[3]);
+						$libraryID = (int) $parts[0];
+						$itemKey = $parts[1];
+						if (Zotero_Libraries::getType($libraryID) == 'group') {
+							$groupID = Zotero_Groups::getGroupIDFromLibraryID($libraryID);
+							$group = Zotero_Groups::get($groupID);
+							$libraryName = "the group '" . $group->name . "'";
+						}
+						else {
+							$libraryName = "your personal library";
+						}
+					}
+					else {
+						$libraryName = "one of your libraries";
+						$itemKey = false;
+					}
+					$this->error(400, "ERROR_PROCESSING_UPLOAD_DATA",
+						"The $fieldName field value '{$value}…' in $libraryName is "
+						. "too long to sync to zotero.org.\n\n"
+						. "Search for the excerpt above "
+						. ($itemKey === false ? "using " : "or copy and paste "
+						. "'$itemKey' into ") . "the Zotero search bar. "
+						. "Shorten the field, or delete the item and empty the "
+						. "Zotero trash, and then try syncing again."
 					);
 				}
 				break;

@@ -39,6 +39,7 @@ class Zotero_Group {
 	private $hasImage = false;
 	private $dateAdded;
 	private $dateModified;
+	private $version;
 	
 	private $loaded = false;
 	private $changed = array();
@@ -69,6 +70,7 @@ class Zotero_Group {
 			case 'hasImage':
 			case 'dateAdded':
 			case 'dateModified':
+			case 'version':
 			case 'erased':
 				break;
 			
@@ -77,6 +79,9 @@ class Zotero_Group {
 					return Zotero_Utilities::slugify($this->name);
 				}
 				return null;
+			
+			case 'etag':
+				return $this->getETag();
 			
 			default:
 				throw new Exception("Invalid group field '$field'");
@@ -607,7 +612,9 @@ class Zotero_Group {
 				$params[] = $this->$field;
 			}
 		}
-		$sql .= implode(", ", $q) . ", dateModified=CURRENT_TIMESTAMP";
+		$sql .= implode(", ", $q) . ", "
+			. "dateModified=CURRENT_TIMESTAMP, "
+			. "version=version=IF(version = 255, 1, version + 1)";
 		$insertID = Zotero_DB::query($sql, $params);
 		
 		if (!$this->id) {
@@ -914,8 +921,14 @@ class Zotero_Group {
 	}
 	
 	
-	public function toAtom($content=array('none'), $queryParams, $apiVersion=null) {
-		// TODO: multi-format support
+	public function toAtom($queryParams) {
+		if (!empty($queryParams['content'])) {
+			$content = $queryParams['content'];
+		}
+		else {
+			$content = array('none');
+		}
+		// TEMP: multi-format support
 		$content = $content[0];
 		
 		if (!$this->loaded) {
@@ -944,12 +957,18 @@ class Zotero_Group {
 		$link = $xml->addChild("link");
 		$link['rel'] = "self";
 		$link['type'] = "application/atom+xml";
-		$link['href'] = Zotero_Atom::getGroupURI($this);
+		$link['href'] = Zotero_API::getGroupURI($this);
 		
 		$link = $xml->addChild('link');
 		$link['rel'] = 'alternate';
 		$link['type'] = 'text/html';
 		$link['href'] = Zotero_URI::getGroupURI($this);
+		
+		$xml->addChild(
+			'zapi:groupID',
+			$this->id,
+			Zotero_Atom::$nsZoteroAPI
+		);
 		
 		$xml->addChild(
 			'zapi:numItems',
@@ -969,6 +988,15 @@ class Zotero_Group {
 		}
 		else if ($content == 'json') {
 			$xml->content['type'] = 'application/json';
+			$xml->content['etag'] = $this->etag;
+			// Deprecated
+			if ($queryParams['apiVersion'] < 2) {
+				$xml->content->addAttribute(
+					"zapi:etag",
+					$this->etag,
+					Zotero_Atom::$nsZoteroAPI
+				);
+			}
 			$xml->content = $this->toJSON(false, $queryParams['pprint'], true);
 		}
 		else if ($content == 'full') {
@@ -980,11 +1008,15 @@ class Zotero_Group {
 			$fNode->appendChild($importedNode);
 		}
 		
+		error_log('=====');
+		error_log($content);
+		error_log($xml->asXML());
+		
 		return $xml;
 	}
 	
 	
-	public function memberToAtom($userID, $apiVersion=null) {
+	public function memberToAtom($userID) {
 		if (!is_int($userID)) {
 			throw new Exception("userID must be an integer (was " . gettype($userID) . ")");
 		}
@@ -1026,7 +1058,7 @@ class Zotero_Group {
 		$link = $xml->addChild("link");
 		$link['rel'] = "self";
 		$link['type'] = "application/atom+xml";
-		$link['href'] = Zotero_Atom::getGroupUserURI($this, $userID);
+		$link['href'] = Zotero_API::getGroupUserURI($this, $userID);
 		
 		$link = $xml->addChild('link');
 		$link['rel'] = 'alternate';
@@ -1052,7 +1084,7 @@ class Zotero_Group {
 	}
 	
 	
-	public function itemToAtom($itemID, $apiVersion=null) {
+	public function itemToAtom($itemID) {
 		if (!is_int($itemID)) {
 			throw new Exception("itemID must be an integer (was " . gettype($itemID) . ")");
 		}
@@ -1096,7 +1128,7 @@ class Zotero_Group {
 		$link = $xml->addChild("link");
 		$link['rel'] = "self";
 		$link['type'] = "application/atom+xml";
-		$link['href'] = Zotero_Atom::getItemURI($item);
+		$link['href'] = Zotero_API::getItemURI($item);
 		
 		$link = $xml->addChild('link');
 		$link['rel'] = 'alternate';
@@ -1132,6 +1164,8 @@ class Zotero_Group {
 			switch ($field) {
 				case 'groupID':
 				case 'slug':
+				// TEMP
+				case 'version':
 					continue 2;
 			}
 			
@@ -1147,6 +1181,14 @@ class Zotero_Group {
 		
 		$this->loaded = true;
 		$this->changed = array();
+	}
+	
+	
+	private function getETag() {
+		if (!$this->loaded) {
+			$this->load();
+		}
+		return md5($this->dateModified . $this->version);
 	}
 	
 	

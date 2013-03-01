@@ -32,9 +32,7 @@ class Zotero_Item {
 	private $dateAdded;
 	private $dateModified;
 	private $serverDateModified;
-	private $itemVersion;
-	private $numNotes;
-	private $numAttachments;
+	private $itemVersion; // computerProgram has a 'version' field
 	
 	private $itemData = array();
 	private $creators = array();
@@ -57,12 +55,17 @@ class Zotero_Item {
 		'filename' => null
 	);
 	
+	private $numNotes;
+	private $numAttachments;
+	
 	private $relatedItems = array();
 	
 	// Populated by init()
 	private $loaded = array();
 	private $changed = array();
+	private $cacheEnabled = false;
 	private $previousData = array();
+	private $reload = false;
 	
 	public function __construct($itemTypeOrID=false) {
 		$numArgs = func_num_args();
@@ -78,7 +81,7 @@ class Zotero_Item {
 	}
 	
 	
-	private function init() {
+	private function init($reload=false) {
 		$this->loaded = array();
 		$props = array(
 			'primaryData',
@@ -106,23 +109,46 @@ class Zotero_Item {
 		$props = array(
 			'deleted',
 			'note',
-			'source'
+			'source',
+			'version' // for updating version/serverDateModified without changing data
 		);
 		foreach ($props as $prop) {
 			$this->changed[$prop] = false;
 		}
 		
 		$this->previousData = array();
+		
+		if ($reload) {
+			$this->reload = true;
+		}
 	}
 	
 	
 	public function __get($field) {
-		if ($field == 'id' || in_array($field, Zotero_Items::$primaryFields)) {
+		// Inline libraryID, id, and key for performance
+		if ($field == 'libraryID') {
+			return $this->libraryID;
+		}
+		if ($field == 'id') {
+			if (!$this->id && $this->key && !$this->loaded['primaryData']) {
+				$this->loadPrimaryData(true);
+			}
+			return $this->id;
+		}
+		if ($field == 'key') {
+			if (!$this->key && $this->id && !$this->loaded['primaryData']) {
+				$this->loadPrimaryData(true);
+			}
+			return $this->key;
+		}
+		
+		if (isset(Zotero_Items::$primaryFields[$field])) {
 			if (!property_exists('Zotero_Item', $field)) {
 				trigger_error("Zotero_Item property '$field' doesn't exist", E_USER_ERROR);
 			}
 			return $this->getField($field);
 		}
+		
 		switch ($field) {
 			case 'creatorSummary':
 				return $this->getCreatorSummary();
@@ -175,9 +201,9 @@ class Zotero_Item {
 	public function __set($field, $val) {
 		//Z_Core::debug("Setting field $field to '$val'");
 		
-		if ($field == 'id' || in_array($field, Zotero_Items::$primaryFields)) {
+		if ($field == 'id' || isset(Zotero_Items::$primaryFields[$field])) {
 			if (!property_exists('Zotero_Item', $field)) {
-				trigger_error("Zotero_Item property '$field' doesn't exist", E_USER_ERROR);
+				throw new Exception("Zotero_Item property '$field' doesn't exist");
 			}
 			return $this->setField($field, $val);
 		}
@@ -208,19 +234,19 @@ class Zotero_Item {
 				return;
 		}
 		
-		trigger_error("'$field' is not a valid Zotero_Item property", E_USER_ERROR);
+		throw new Exception("'$field' is not a valid Zotero_Item property");
 	}
 	
 	
 	public function getField($field, $unformatted=false, $includeBaseMapped=false, $skipValidation=false) {
-		Z_Core::debug("Requesting field '$field' for item $this->id", 4);
+		//Z_Core::debug("Requesting field '$field' for item $this->id", 4);
 		
 		if (($this->id || $this->key) && !$this->loaded['primaryData']) {
 			$this->loadPrimaryData(true);
 		}
 		
-		if ($field == 'id' || in_array($field, Zotero_Items::$primaryFields)) {
-			Z_Core::debug("Returning '{$this->$field}' for field $field", 4);
+		if ($field == 'id' || isset(Zotero_Items::$primaryFields[$field])) {
+			//Z_Core::debug("Returning '{$this->$field}' for field $field", 4);
 			
 			return $this->$field;
 		}
@@ -270,7 +296,7 @@ class Zotero_Item {
 			}
 		}
 		
-		Z_Core::debug("Returning '$value' for field $field", 4);
+		//Z_Core::debug("Returning '$value' for field $field", 4);
 		return $value;
 	}
 	
@@ -482,93 +508,16 @@ class Zotero_Item {
 			throw new Exception("ID or key not set");
 		}
 		
-		// Use cached check for existence if possible
-		if ($libraryID && $key) {
-			if (!Zotero_Items::existsByLibraryAndKey($libraryID, $key)) {
-				$this->loaded['primaryData'] = true;
-				
-				if ($allowFail) {
-					return false;
-				}
-				
-				throw new Exception("Item " . ($id ? $id : "$libraryID/$key") . " not found");
-			}
-		}
-		
-		$columns = array();
-		foreach (Zotero_Items::$primaryFields as $field) {
-			$colSQL = '';
-			if (is_null($field == 'itemID' ? $this->id : $this->$field)) {
-				switch ($field) {
-					case 'itemID':
-					case 'itemTypeID':
-					case 'dateAdded':
-					case 'dateModified':
-					case 'libraryID':
-					case 'key':
-					case 'serverDateModified':
-						$colSQL = 'I.' . $field;
-						break;
-					
-					case 'itemVersion':
-						$colSQL = 'I.version AS itemVersion';
-						break;
-					
-					case 'numNotes':
-						$colSQL = '(SELECT COUNT(*) FROM itemNotes INo
-							WHERE sourceItemID=I.itemID AND INo.itemID NOT IN
-							(SELECT itemID FROM deletedItems)) AS numNotes';
-						break;
-						
-					case 'numAttachments':
-						$colSQL = '(SELECT COUNT(*) FROM itemAttachments IA
-							WHERE sourceItemID=I.itemID AND IA.itemID NOT IN
-							(SELECT itemID FROM deletedItems)) AS numAttachments';
-						break;
-					
-					case 'numNotes':
-						$colSQL = '(SELECT COUNT(*) FROM itemNotes
-									WHERE sourceItemID=I.itemID) AS numNotes';
-						break;
-						
-					case 'numAttachments':
-						$colSQL = '(SELECT COUNT(*) FROM itemAttachments
-									WHERE sourceItemID=I.itemID) AS numAttachments';
-						break;
-				}
-				if ($colSQL) {
-					$columns[] = $colSQL;
-				}
-			}
-		}
-		
-		if (!$columns) {
-			Z_Core::debug("No primary columns to load");
-			return;
-		}
-		
-		$sql = 'SELECT ' . implode(', ', $columns) . " FROM items I WHERE ";
-		
 		if ($id) {
-			if (!is_numeric($id)) {
-				trigger_error("Invalid itemID '$id'", E_USER_ERROR);
-			}
-			$sql .= "itemID=?";
-			$stmt = Zotero_DB::getStatement($sql, 'loadPrimaryData_id', Zotero_Shards::getByLibraryID($libraryID));
-			$row = Zotero_DB::rowQueryFromStatement($stmt, array($id));
+			Z_Core::debug("Loading data for item $libraryID/$id");
+			$row = Zotero_Items::getPrimaryDataByID($libraryID, $id);
 		}
 		else {
-			if (!is_numeric($libraryID)) {
-				trigger_error("Invalid libraryID '$libraryID'", E_USER_ERROR);
-			}
-			if (!preg_match('/[A-Z0-9]{8}/', $key)) {
-				trigger_error("Invalid key '$key'!", E_USER_ERROR);
-			}
-			$sql .= "libraryID=? AND `key`=?";
-			$stmt = Zotero_DB::getStatement($sql, 'loadPrimaryData_key', Zotero_Shards::getByLibraryID($libraryID));
-			$row = Zotero_DB::rowQueryFromStatement($stmt, array($libraryID, $key));
+			Z_Core::debug("Loading data for item $libraryID/$key");
+			$row = Zotero_Items::getPrimaryDataByKey($libraryID, $key);
 		}
 		
+		$this->reload = false;
 		$this->loaded['primaryData'] = true;
 		
 		if (!$row) {
@@ -576,6 +525,10 @@ class Zotero_Item {
 				return false;
 			}
 			throw new Exception("Item " . ($id ? $id : "$libraryID/$key") . " not found");
+		}
+		
+		if ($row['libraryID'] != $libraryID) {
+			throw new Exception("libraryID {$row['libraryID']} != $this->libraryID");
 		}
 		
 		$this->loadFromRow($row);
@@ -594,29 +547,19 @@ class Zotero_Item {
 			$this->setType($row['itemTypeID'], true);
 		}
 		
-		foreach ($row as $field=>$val) {
-			if ($field == 'version') {
-				$field = 'itemVersion';
+		foreach ($row as $field => $val) {
+			if (!isset(Zotero_Items::$primaryFields[$field])) {
+				Z_Core::debug("'$field' is not a valid primary field", 1);
 			}
 			
-			// Only accept primary field data through loadFromRow()
-			if (in_array($field, Zotero_Items::$primaryFields)) {
-				//Z_Core::debug("Setting field '$field' to '$val' for item " . $this->id);
-				switch ($field) {
-					case 'itemID':
-						$this->id = $val;
-						break;
-						
-					case 'itemTypeID':
-						$this->setType($val, true);
-						break;
-					
-					default:
-						$this->$field = $val;
-				}
-			}
-			else {
-				Z_Core::debug("'$field' is not a valid primary field", 1);
+			//Z_Core::debug("Setting field '$field' to '$val' for item " . $this->id);
+			switch ($field) {
+				case 'itemTypeID':
+					$this->setType($val, true);
+					break;
+				
+				default:
+					$this->$field = $val;
 			}
 		}
 		
@@ -772,7 +715,7 @@ class Zotero_Item {
 	 */
 	public function setField($field, $value, $loadIn=false) {
 		if (empty($field)) {
-			trigger_error("Field not specified", E_USER_ERROR);
+			throw new Exception("Field not specified");
 		}
 		
 		// Set id, libraryID, and key without loading data first
@@ -801,17 +744,14 @@ class Zotero_Item {
 		}
 		
 		// Primary field
-		if (in_array($field, Zotero_Items::$primaryFields)) {
+		if (isset(Zotero_Items::$primaryFields[$field])) {
 			if ($loadIn) {
 				throw new Exception("Cannot set primary field $field in loadIn mode");
 			}
 			
 			switch ($field) {
-				case 'itemID':
-				case 'serverDateModified':
+				case 'id':
 				case 'itemVersion':
-				case 'numNotes':
-				case 'numAttachments':
 					trigger_error("Primary field '$field' cannot be changed through setField()", E_USER_ERROR);
 			}
 			
@@ -859,6 +799,10 @@ class Zotero_Item {
 			throw new Exception("'$field' is not a valid itemData field.", Z_ERROR_INVALID_INPUT);
 		}
 		
+		if ($value === "") {
+			$value = false;
+		}
+		
 		if ($value !== false && !Zotero_ItemFields::isValidForType($fieldID, $this->itemTypeID)) {
 			throw new Exception("'$field' is not a valid field for type '"
 				. Zotero_ItemTypes::getName($this->itemTypeID) . "'", Z_ERROR_INVALID_INPUT);
@@ -869,6 +813,9 @@ class Zotero_Item {
 			if (Zotero_ItemFields::isFieldOfBase($fieldID, 'date') &&
 					!Zotero_Date::isMultipart($value)) {
 				$value = Zotero_Date::strToMultipart($value);
+				if ($value === "") {
+					$value = false;
+				}
 			}
 			// Validate access date
 			else if ($fieldID == Zotero_ItemFields::getID('accessDate')) {
@@ -885,6 +832,8 @@ class Zotero_Item {
 					(isset($this->itemData[$fieldID]) && $this->itemData[$fieldID] === $value)) {
 				return false;
 			}
+			
+			//Z_Core::debug("Field $field has changed from {$this->itemData[$fieldID]} to $value", 4);
 			
 			// TODO: Save a copy of the object before modifying?
 		}
@@ -918,8 +867,9 @@ class Zotero_Item {
 	
 	
 	public function hasChanged() {
-		foreach ($this->changed as $changed) {
+		foreach ($this->changed as $key => $changed) {
 			if ($changed) {
+				Z_Core::debug("$key has changed for item {$this->libraryID}/{$this->key}");
 				return true;
 			}
 		}
@@ -932,13 +882,15 @@ class Zotero_Item {
 			return $this->creatorSummary;
 		}
 		
-		$cacheVersion = 1;
-		$cacheKey = $this->getCacheKey("creatorSummary_$cacheVersion");
-		if ($cacheKey) {
-			$creatorSummary = Z_Core::$MC->get($cacheKey);
-			if ($creatorSummary !== false) {
-				$this->creatorSummary = $creatorSummary;
-				return $creatorSummary;
+		if ($this->cacheEnabled) {
+			$cacheVersion = 1;
+			$cacheKey = $this->getCacheKey("creatorSummary", $cacheVersion);
+			if ($cacheKey) {
+				$creatorSummary = Z_Core::$MC->get($cacheKey);
+				if ($creatorSummary !== false) {
+					$this->creatorSummary = $creatorSummary;
+					return $creatorSummary;
+				}
 			}
 		}
 		
@@ -992,7 +944,7 @@ class Zotero_Item {
 			break;
 		}
 		
-		if ($cacheKey) {
+		if ($this->cacheEnabled && $cacheKey) {
 			Z_Core::$MC->set($cacheKey, $creatorSummary);
 		}
 		
@@ -1014,15 +966,23 @@ class Zotero_Item {
 			throw new Exception("Invalid itemID");
 		}
 		
-		$cacheKey = $this->getCacheKey("itemIsDeleted");
-		$deleted = Z_Core::$MC->get($cacheKey);
+		if ($this->cacheEnabled) {
+			$cacheVersion = 1;
+			$cacheKey = $this->getCacheKey("itemIsDeleted", $cacheVersion);
+			$deleted = Z_Core::$MC->get($cacheKey);
+		}
+		else {
+			$deleted = false;
+		}
 		if ($deleted === false) {
 			$sql = "SELECT COUNT(*) FROM deletedItems WHERE itemID=?";
 			$stmt = Zotero_DB::getStatement($sql, true, Zotero_Shards::getByLibraryID($this->libraryID));
 			$deleted = !!Zotero_DB::valueQueryFromStatement($stmt, $this->id);
 			
 			// Memcache returns false for empty keys, so use integer
-			Z_Core::$MC->set($cacheKey, $deleted ? 1 : 0);
+			if ($this->cacheEnabled) {
+				Z_Core::$MC->set($cacheKey, $deleted ? 1 : 0);
+			}
 		}
 		
 		$this->deleted = $deleted;
@@ -1058,63 +1018,6 @@ class Zotero_Item {
 	}
 	
 	
-	public function addRelatedItem($itemID) {
-		if ($itemID == $this->id) {
-			Z_Core::debug("Can't relate item to itself in Zotero_Item.addRelatedItem()", 2);
-			return false;
-		}
-		
-		$current = $this->getRelatedItems();
-		if ($current && in_array($itemID, $current)) {
-			Z_Core::debug("Item $this->id already related to
-				item $itemID in Zotero_Item.addItem()");
-			return false;
-		}
-		
-		$item = Zotero_Items::get($this->libraryID, $itemID);
-		if (!$item) {
-			trigger_error("Can't relate item to invalid item $itemID
-				in Zotero.Item.addRelatedItem()", E_USER_ERROR);
-		}
-		$otherCurrent = $item->relatedItems;
-		if ($otherCurrent && in_array($this->id, $otherCurrent)) {
-			Z_Core::debug("Other item $itemID already related to item
-				$this->id in Zotero_Item.addItem()");
-			return false;
-		}
-		
-		if (!$this->changed['relatedItems']) {
-			$this->storePreviousData('relatedItems');
-			$this->changed['relatedItems'] = true;
-		}
-		Z_Core::debug("Adding $itemID related item to " . $this->id);
-		$this->relatedItems[] = $itemID;
-		return true;
-	}
-	
-	
-	public function removeRelatedItem($itemID) {
-		$current = $this->getRelatedItems();
-		if ($current) {
-			$index = array_search($itemID, $current);
-		}
-		
-		if (!$current || $index === false) {
-			Z_Core::debug("Item $this->id isn't related to item $itemID
-				in Zotero_Item.removeRelatedItem()");
-			return false;
-		}
-		
-		if (!$this->changed['relatedItems']) {
-			$this->storePreviousData('relatedItems');
-			$this->changed['relatedItems'] = true;
-		}
-		Z_Core::debug("Unsetting $itemID related item from " . $this->id);
-		unset($this->relatedItems[$index]);
-		return true;
-	}
-	
-	
 	public function save($userID=false) {
 		if (!$this->libraryID) {
 			trigger_error("Library ID must be set before saving", E_USER_ERROR);
@@ -1126,6 +1029,8 @@ class Zotero_Item {
 			Z_Core::debug("Item $this->id has not changed");
 			return false;
 		}
+		
+		$this->cacheEnabled = false;
 		
 		// Make sure there are no gaps in the creator indexes
 		$creators = $this->getCreators();
@@ -1145,7 +1050,7 @@ class Zotero_Item {
 			//
 			// New item, insert and return id
 			//
-			if (!$this->id || !$this->exists()) {
+			if (!$this->id || (!$this->changed['version'] && !$this->exists())) {
 				Z_Core::debug('Saving data for new item to database');
 				
 				$isNew = true;
@@ -1156,7 +1061,7 @@ class Zotero_Item {
 				// Primary fields
 				//
 				$itemID = $this->id ? $this->id : Zotero_ID::get('items');
-				$key = $this->key ? $this->key : $this->generateKey();
+				$key = $this->key ? $this->key : Zotero_ID::getKey();
 				
 				$sqlColumns = array(
 					'itemID',
@@ -1165,22 +1070,35 @@ class Zotero_Item {
 					'key',
 					'dateAdded',
 					'dateModified',
-					'serverDateModified'
+					'serverDateModified',
+					'version'
 				);
 				$timestamp = Zotero_DB::getTransactionTimestamp();
+				$dateAdded = $this->dateAdded ? $this->dateAdded : $timestamp;
+				$dateModified = $this->dateModified ? $this->dateModified : $timestamp;
+				$version = Zotero_Libraries::getUpdatedVersion($this->libraryID);
 				$sqlValues = array(
 					$itemID,
 					$this->itemTypeID,
 					$this->libraryID,
 					$key,
-					$this->dateAdded ? $this->dateAdded : $timestamp,
-					$this->dateModified ? $this->dateModified : $timestamp,
-					$timestamp
+					$dateAdded,
+					$dateModified,
+					$timestamp,
+					$version
 				);
 				
-				//
-				// Primary fields
-				//
+				$primaryDataCache = array(
+					'id' => $itemID,
+					'libraryID' => $this->libraryID,
+					'key' => $key,
+					'itemTypeID' => $this->itemTypeID,
+					'dateAdded' => $dateAdded,
+					'dateModified' => $dateModified,
+					'serverDateModified' => $timestamp,
+					'itemVersion' => $version
+				);
+				
 				$sql = 'INSERT INTO items (`' . implode('`, `', $sqlColumns) . '`) VALUES (';
 				// Insert placeholders for bind parameters
 				for ($i=0; $i<sizeOf($sqlValues); $i++) {
@@ -1202,7 +1120,7 @@ class Zotero_Item {
 				// Group item data
 				if (Zotero_Libraries::getType($this->libraryID) == 'group' && $userID) {
 					$sql = "INSERT INTO groupItems VALUES (?, ?, ?)";
-					Zotero_DB::query($sql, array($itemID, $userID, null), $shardID);
+					Zotero_DB::query($sql, array($itemID, $userID, $userID), $shardID);
 				}
 				
 				//
@@ -1233,8 +1151,12 @@ class Zotero_Item {
 							$fieldName = Zotero_ItemFields::getLocalizedString(
 								$this->itemTypeID, $fieldID
 							);
-							throw new Exception("=$fieldName field " .
-								 "'" . substr($value, 0, 50) . "...' too long");
+							$msg = "=$fieldName field value " .
+								 "'" . mb_substr($value, 0, 50) . "...' too long";
+							if ($this->key) {
+								$msg .= " for item '" . $this->libraryID . "/" . $key . "'";
+							}
+							throw new Exception($msg, Z_ERROR_FIELD_TOO_LONG);
 						}
 						
 						if ($insertCounter < $maxInsertGroups) {
@@ -1420,7 +1342,9 @@ class Zotero_Item {
 				if (mb_substr($sortTitle, 0, 5) == mb_substr($this->getField('title', false, true), 0, 5)) {
 					$sortTitle = null;
 				}
-				$creatorSummary = $this->isRegularItem() ? mb_strcut($this->getCreatorSummary(), 0, Zotero_Creators::$creatorSummarySortLength) : '';
+				$creatorSummary = $this->isRegularItem()
+					? mb_strcut($this->getCreatorSummary(true), 0, Zotero_Creators::$creatorSummarySortLength)
+					: '';
 				$sql = "INSERT INTO itemSortFields (itemID, sortTitle, creatorSummary) VALUES (?, ?, ?)";
 				Zotero_DB::query($sql, array($itemID, $sortTitle, $creatorSummary), $shardID);
 				
@@ -1446,46 +1370,22 @@ class Zotero_Item {
  				
 				// Related items
 				if (!empty($this->changed['relatedItems'])) {
-					$removed = array();
-					$newids = array();
-					$currentIDs = $this->relatedItems;
+					$uri = Zotero_URI::getItemURI($this, true);
 					
-					if (!$currentIDs) {
-						$currentIDs = array();
-					}
-					
-					foreach ($this->previousData['relatedItems'] as $id) {
-						if (!in_array($id, $currentIDs)) {
-							$removed[] = $id;
-						}
-					}
-					
-					foreach ($currentIDs as $id) {
-						if (in_array($id, $this->previousData['relatedItems'])) {
-							continue;
-						}
-						$newids[] = $id;
-					}
-					
-					if ($removed) {
-						$sql = "DELETE FROM itemRelated WHERE itemID=?
-								AND linkedItemID IN (";
-						$sql .= implode(', ', array_fill(0, sizeOf($removed), '?')) . ")";
-						Zotero_DB::query(
-							$sql,
-							array_merge(array($this->id), $removed),
-							$shardID
+					$sql = "INSERT IGNORE INTO relations "
+						 . "(relationID, libraryID, subject, predicate, object) "
+						 . "VALUES (NULL, ?, ?, ?, ?)";
+					$insertStatement = Zotero_DB::getStatement($sql, false, $shardID);
+					foreach ($this->relatedItems as $relatedItemKey) {
+						$insertStatement->execute(
+							array(
+								$this->libraryID,
+								$uri,
+								Zotero_Relations::$relatedItemPredicate,
+								Zotero_URI::getLibraryURI($this->libraryID, true)
+									. "/items/" . $relatedItemKey
+							)
 						);
-					}
-					
-					if ($newids) {
-						$sql = "INSERT INTO itemRelated (itemID, linkedItemID)
-								VALUES (?,?)";
-						$insertStatement = Zotero_DB::getStatement($sql, false, $shardID);
-						
-						foreach ($newids as $linkedItemID) {
-							$insertStatement->execute(array($itemID, $linkedItemID));
-						}
 					}
 				}
 				
@@ -1498,7 +1398,8 @@ class Zotero_Item {
 			// Existing item, update
 			//
 			else {
-				Z_Core::debug('Updating database with new item data', 4);
+				Z_Core::debug('Updating database with new item data for item '
+					. $this->libraryID . '/' . $this->key, 4);
 				
 				$isNew = false;
 				
@@ -1509,6 +1410,18 @@ class Zotero_Item {
 				$sqlValues = array();
 				
 				$timestamp = Zotero_DB::getTransactionTimestamp();
+				$version = Zotero_Libraries::getUpdatedVersion($this->libraryID);
+				
+				$primaryDataCache = array(
+					'id' => $this->id,
+					'libraryID' => $this->libraryID,
+					'key' => $this->key,
+					'itemTypeID' => $this->itemTypeID,
+					'dateAdded' => $this->dateAdded,
+					'dateModified' => $this->dateModified,
+					'serverDateModified' => $timestamp,
+					'itemVersion' => $version
+				);
 				
 				$updateFields = array(
 					'itemTypeID',
@@ -1523,16 +1436,13 @@ class Zotero_Item {
 						$sql .= "`$updateField`=?, ";
 						$sqlValues[] = $this->$updateField;
 					}
-					else if ($updateField == 'dateModified') {
-						$sql .= "`$updateField`=?, ";
-						$sqlValues[] = $timestamp;
-					}
 				}
 				
-				$sql .= "serverDateModified=?, version=IF(version = 65535, 0, version + 1) WHERE itemID=?";
+				$sql .= "serverDateModified=?, version=? WHERE itemID=?";
 				array_push(
 					$sqlValues,
 					$timestamp,
+					$version,
 					$this->id
 				);
 				
@@ -1583,8 +1493,13 @@ class Zotero_Item {
 							$fieldName = Zotero_ItemFields::getLocalizedString(
 								$this->itemTypeID, $fieldID
 							);
-							throw new Exception("=$fieldName field " .
-								 "'" . substr($value, 0, 50) . "...' too long");
+							$msg = "=$fieldName field value " .
+								 "'" . mb_substr($value, 0, 50) . "...' too long";
+							if ($this->key) {
+								$msg .= " for item '" . $this->libraryID
+									. "/" . $this->key . "'";
+							}
+							throw new Exception($msg, Z_ERROR_FIELD_TOO_LONG);
 						}
 						
 						if ($replaceCounter < $maxReplaceGroups) {
@@ -1793,7 +1708,7 @@ class Zotero_Item {
 					$params[] = $sortTitle;
 					
 					if ($this->changed['creators']) {
-						$creatorSummary = mb_strcut($this->getCreatorSummary(), 0, Zotero_Creators::$creatorSummarySortLength);
+						$creatorSummary = mb_strcut($this->getCreatorSummary(true), 0, Zotero_Creators::$creatorSummarySortLength);
 						$sql .= ", creatorSummary=?";
 						$params[] = $creatorSummary;
 					}
@@ -1914,51 +1829,83 @@ class Zotero_Item {
 				// Related items
 				if (!empty($this->changed['relatedItems'])) {
 					$removed = array();
-					$newids = array();
-					$currentIDs = $this->relatedItems;
+					$new = array();
+					$currentKeys = $this->relatedItems;
 					
-					if (!$currentIDs) {
-						$currentIDs = array();
+					if (!$currentKeys) {
+						$currentKeys = array();
 					}
 					
-					foreach ($this->previousData['relatedItems'] as $id) {
-						if (!in_array($id, $currentIDs)) {
-							$removed[] = $id;
+					// TEMP
+					$sql = "SELECT `key` FROM itemRelated IR "
+						 . "JOIN items I ON (IR.linkedItemID=I.itemID) "
+						 . "WHERE IR.itemID=?";
+					$toMigrate = Zotero_DB::columnQuery($sql, $this->id, $shardID);
+					if ($toMigrate) {
+						$new = $toMigrate;
+						$sql = "DELETE FROM itemRelated WHERE itemID=?";
+						Zotero_DB::query($sql, $this->id, $shardID);
+					}
+					
+					foreach ($this->previousData['relatedItems'] as $relatedItemKey) {
+						if (!in_array($relatedItemKey, $currentKeys)) {
+							$removed[] = $relatedItemKey;
 						}
 					}
 					
-					foreach ($currentIDs as $id) {
-						if (in_array($id, $this->previousData['relatedItems'])) {
+					foreach ($currentKeys as $relatedItemKey) {
+						if (in_array($relatedItemKey, $this->previousData['relatedItems'])) {
 							continue;
 						}
-						$newids[] = $id;
+						$new[] = $relatedItemKey;
 					}
+					
+					$uri = Zotero_URI::getItemURI($this, true);
 					
 					if ($removed) {
-						$sql = "DELETE FROM itemRelated WHERE itemID=?
-								AND linkedItemID IN (";
-						$q = array_fill(0, sizeOf($removed), '?');
-						$sql .= implode(', ', $q) . ")";
-						Zotero_DB::query(
-							$sql,
-							array_merge(array($this->id), $removed),
-							$shardID
+						$sql = "DELETE FROM relations WHERE libraryID=?
+								AND subject=?
+								AND predicate=?
+								AND object IN ("
+								. implode(', ', array_fill(0, sizeOf($removed), '?'))
+								. ")";
+						$params = array(
+							$this->libraryID,
+							$uri,
+							Zotero_Relations::$relatedItemPredicate
 						);
+						foreach ($removed as $relatedItemKey) {
+							$params[] =
+								Zotero_URI::getLibraryURI($this->libraryID, true)
+								. "/items/" . $relatedItemKey;
+						}
+						Zotero_DB::query($sql, $params, $shardID);
 					}
 					
-					if ($newids) {
-						$sql = "INSERT INTO itemRelated (itemID, linkedItemID)
-								VALUES (?,?)";
+					if ($new) {
+						$sql = "INSERT IGNORE INTO relations "
+						     . "(relationID, libraryID, subject, predicate, object) "
+						     . "VALUES (NULL, ?, ?, ?, ?)";
 						$insertStatement = Zotero_DB::getStatement($sql, false, $shardID);
 						
-						foreach ($newids as $linkedItemID) {
-							$insertStatement->execute(array($this->id, $linkedItemID));
+						foreach ($new as $relatedItemKey) {
+							$insertStatement->execute(
+								array(
+									$this->libraryID,
+									$uri,
+									Zotero_Relations::$relatedItemPredicate,
+									Zotero_URI::getLibraryURI($this->libraryID, true)
+										. "/items/" . $relatedItemKey
+								)
+							);
 						}
 					}
 				}
 			}
 			
 			Zotero_DB::commit();
+			
+			Zotero_Items::cachePrimaryData($primaryDataCache);
 		}
 		
 		catch (Exception $e) {
@@ -1973,21 +1920,41 @@ class Zotero_Item {
 			$this->key = $key;
 		}
 		
+		$this->cacheEnabled = false;
+		
 		if ($isNew) {
 			Zotero_Items::cache($this);
-			Zotero_Items::cacheLibraryKeyID($this->libraryID, $key, $itemID);
 		}
 		
-		// TODO: invalidate memcache
-		Zotero_Items::reload($this->libraryID, $this->id);
+		$this->reload();
 		
 		if ($isNew) {
-			//Zotero.Notifier.trigger('add', 'item', $this->getID());
+			Zotero_Notifier::trigger('add', 'item', $this->libraryID . "/" . $this->key);
 			return $this->id;
 		}
 		
-		//Zotero.Notifier.trigger('modify', 'item', $this->getID(), { old: $this->_preChangeArray });
+		Zotero_Notifier::trigger('modify', 'item', $this->libraryID . "/" . $this->key);
 		return true;
+	}
+	
+	
+	/**
+	 * Reinitialize item so that existing instances get reloaded
+	 *
+	 * This is called from save() and doesn't need to be called directly
+	 * unless the database is modified directly outside of this class.
+	 */
+	public function reload() {
+		$this->init(true);
+	}
+	
+	
+	/**
+	 * Update the item's version without changing any data
+	 */
+	public function updateVersion($userID) {
+		$this->changed['version'] = true;
+		$this->save($userID);
 	}
 	
 	
@@ -2101,6 +2068,11 @@ class Zotero_Item {
 	}
 	
 	
+	public function isTopLevelItem() {
+		return $this->isRegularItem() || !$this->getSourceKey();
+	}
+	
+	
 	public function numChildren($includeTrashed=false) {
 		return $this->numNotes($includeTrashed) + $this->numAttachments($includeTrashed);
 	}
@@ -2145,14 +2117,22 @@ class Zotero_Item {
 			return false;
 		}
 		
-		$cacheKey = $this->getCacheKey("itemSource");
-		$sourceItemID = Z_Core::$MC->get($cacheKey);
+		if ($this->cacheEnabled) {
+			$cacheVersion = 1;
+			$cacheKey = $this->getCacheKey("itemSource", $cacheVersion);
+			$sourceItemID = Z_Core::$MC->get($cacheKey);
+		}
+		else {
+			$sourceItemID = false;
+		}
 		if ($sourceItemID === false) {
 			$sql = "SELECT sourceItemID FROM item{$Type}s WHERE itemID=?";
 			$stmt = Zotero_DB::getStatement($sql, true, Zotero_Shards::getByLibraryID($this->libraryID));
 			$sourceItemID = Zotero_DB::valueQueryFromStatement($stmt, $this->id);
 			
-			Z_Core::$MC->set($cacheKey, $sourceItemID ? $sourceItemID : 0);
+			if ($this->cacheEnabled) {
+				Z_Core::$MC->set($cacheKey, $sourceItemID ? $sourceItemID : 0);
+			}
 		}
 		
 		if (!$sourceItemID) {
@@ -2244,7 +2224,7 @@ class Zotero_Item {
 			return false;
 		}
 		
-		$this->sourceItem = $sourceItemKey ? $sourceItemKey : null;
+		$this->sourceItem = $sourceItemKey ? $sourceItemKey : false;
 		$this->changed['source'] = true;
 		
 		return true;
@@ -2266,11 +2246,20 @@ class Zotero_Item {
 			return 0;
 		}
 		
+		if (!isset($this->numAttachments)) {
+			$sql = "SELECT COUNT(*) FROM itemAttachments WHERE sourceItemID=?";
+			$this->numAttachments = (int) Zotero_DB::valueQuery(
+				$sql, $this->id, Zotero_Shards::getByLibraryID($this->libraryID)
+			);
+		}
+		
 		$deleted = 0;
 		if ($includeTrashed) {
 			$sql = "SELECT COUNT(*) FROM itemAttachments JOIN deletedItems USING (itemID)
 					WHERE sourceItemID=?";
-			$deleted = (int) Zotero_DB::valueQuery($sql, $this->id, Zotero_Shards::getByLibraryID($this->libraryID));
+			$deleted = (int) Zotero_DB::valueQuery(
+				$sql, $this->id, Zotero_Shards::getByLibraryID($this->libraryID)
+			);
 		}
 		
 		return $this->numAttachments + $deleted;
@@ -2420,6 +2409,38 @@ class Zotero_Item {
 			return;
 		}
 		
+		if (mb_strlen($text) > Zotero_Notes::$MAX_NOTE_LENGTH) {
+			// UTF-8 &nbsp; (0xC2 0xA0) isn't trimmed by default
+			$whitespace = chr(0x20) . chr(0x09) . chr(0x0A) . chr(0x0D)
+							. chr(0x00) . chr(0x0B) . chr(0xC2) . chr(0xA0);
+			$excerpt = iconv(
+				"UTF-8",
+				"UTF-8//IGNORE",
+				Zotero_Notes::noteToTitle(trim($text), true)
+			);
+			$excerpt = trim($excerpt, $whitespace);
+			// If tag-stripped version is empty, just return raw HTML
+			if ($excerpt == '') {
+				$excerpt = iconv(
+					"UTF-8",
+					"UTF-8//IGNORE",
+					preg_replace(
+						'/\s+/',
+						' ',
+						mb_substr(trim($text), 0, Zotero_Notes::$MAX_TITLE_LENGTH)
+					)
+				);
+				$excerpt = html_entity_decode($excerpt);
+				$excerpt = trim($excerpt, $whitespace);
+			}
+			
+			$msg = "=Note '" . $excerpt . "...' too long";
+			if ($this->key) {
+				$msg .= " for item '" . $this->libraryID . "/" . $this->key . "'";
+			}
+			throw new Exception($msg, Z_ERROR_NOTE_TOO_LONG);
+		}
+		
 		$this->noteText = $text;
 		$this->noteTextSanitized = null;
 		$this->changed['note'] = true;
@@ -2441,11 +2462,20 @@ class Zotero_Item {
 			return 0;
 		}
 		
+		if (!isset($this->numNotes)) {
+			$sql = "SELECT COUNT(*) FROM itemNotes WHERE sourceItemID=?";
+			$this->numNotes = (int) Zotero_DB::valueQuery(
+				$sql, $this->id, Zotero_Shards::getByLibraryID($this->libraryID)
+			);
+		}
+		
 		$deleted = 0;
 		if ($includeTrashed) {
 			$sql = "SELECT COUNT(*) FROM itemNotes WHERE sourceItemID=? AND
 					itemID IN (SELECT itemID FROM deletedItems)";
-			$deleted = (int) Zotero_DB::valueQuery($sql, $this->id, Zotero_Shards::getByLibraryID($this->libraryID));
+			$deleted = (int) Zotero_DB::valueQuery(
+				$sql, $this->id, Zotero_Shards::getByLibraryID($this->libraryID)
+			);
 		}
 		
 		return $this->numNotes + $deleted;
@@ -2553,6 +2583,11 @@ class Zotero_Item {
 		if (!$mimeType) {
 			$mimeType = '';
 		}
+		
+		// TEMP: Strip some invalid characters
+		$mimeType = iconv("UTF-8", "ASCII//IGNORE", $mimeType);
+		$mimeType = preg_replace('/[^\x{0009}\x{000a}\x{000d}\x{0020}-\x{D7FF}\x{E000}-\x{FFFD}]+/u', '', $mimeType);
+		
 		$this->attachmentData['mimeType'] = $mimeType;
 		return $mimeType;
 	}
@@ -2747,7 +2782,8 @@ class Zotero_Item {
 		
 		// Don't allow changing of existing linkMode
 		if ($field == 'linkMode' && $this->$fieldName !== null) {
-			throw new Exception("Cannot change existing linkMode");
+			throw new Exception("Cannot change existing linkMode for item "
+				. $this->libraryID . "/" . $this->key);
 		}
 		
 		$this->changed['attachmentData'][$field] = true;
@@ -2836,7 +2872,7 @@ class Zotero_Item {
 	/**
 	 * $tags is an array of objects with properties 'tag' and 'type'
 	 */
-	public function setTags($newTags) {
+	public function setTags($newTags, $userID) {
 		if (!$this->id) {
 			throw new Exception('itemID not set');
 		}
@@ -2901,18 +2937,207 @@ class Zotero_Item {
 			}
 			
 			$tag = Zotero_Tags::get($this->libraryID, $tagID);
-			$tag->addItem($this->id);
+			$tag->addItem($this->key);
 			$tag->save();
 		}
 		
 		foreach ($toRemove as $tag) {
-			$tag->removeItem($this->id);
+			$tag->removeItem($this->key);
 			$tag->save();
 		}
+		
+		$this->updateVersion($userID);
 		
 		Zotero_DB::commit();
 		
 		return $toAdd || $toRemove;
+	}
+	
+	
+	//
+	// Methods dealing with collections
+	//
+	// save() is not required for collection functions
+	//
+	public function numCollections() {
+		if (!$this->id) {
+			return 0;
+		}
+		
+		$sql = "SELECT COUNT(*) FROM collectionItems WHERE itemID=?";
+		return (int) Zotero_DB::valueQuery(
+			$sql, $this->id, Zotero_Shards::getByLibraryID($this->libraryID)
+		);
+	}
+	
+	
+	/**
+	 * Returns all collections the item is in
+	 *
+	 * @param boolean [$asKeys=false] Return collection keys instead of collection objects
+	 * @return array Array of Zotero_Collection objects, or keys if $asKeys=true
+	 */
+	public function getCollections($asKeys=false) {
+		if (!$this->id) {
+			return array();
+		}
+		
+		$sql = "SELECT `key` FROM collections
+		        JOIN collectionItems USING (collectionID)
+		        WHERE itemID=?";
+		$collectionKeys = Zotero_DB::columnQuery(
+			$sql, $this->id, Zotero_Shards::getByLibraryID($this->libraryID));
+		if (!$collectionKeys) {
+			return array();
+		}
+		
+		if ($asKeys) {
+			return $collectionKeys;
+		}
+		
+		$collectionObjs = array();
+		foreach ($collectionKeys as $key) {
+			$collectionObjs[] = Zotero_Collections::getByLibraryAndKey(
+				$this->libraryID, $key, true
+			);
+		}
+		return $collectionObjs;
+	}
+	
+	
+	/**
+	 * Updates the collections an item is in. No separate save of the item
+	 * is required.
+	 *
+	 * @param array $newCollections Array of collection keys to add
+	 * @param int $userID User making the change
+	 */
+	public function setCollections($newCollections, $userID) {
+		if (!$this->id) {
+			throw new Exception('itemID not set');
+		}
+		
+		$numCollections = $this->numCollections();
+		
+		if (!$newCollections && !$numCollections) {
+			return false;
+		}
+		
+		Zotero_DB::beginTransaction();
+		
+		$oldCollections = $this->getCollections(true);
+		
+		$toAdd = array_diff($newCollections, $oldCollections);
+		$toRemove = array_diff($oldCollections, $newCollections);
+		
+		foreach ($toAdd as $key) {
+			$collection = Zotero_Collections::getByLibraryAndKey($this->libraryID, $key);
+			if (!$collection) {
+				throw new Exception("Collection with key '$key' not found", Z_ERROR_COLLECTION_NOT_FOUND);
+			}
+			$collection->addItem($this->id);
+			$collection->save();
+		}
+		
+		foreach ($toRemove as $key) {
+			$collection = Zotero_Collections::getByLibraryAndKey($this->libraryID, $key);
+			$collection->removeItem($this->id);
+			$collection->save();
+		}
+		
+		$this->updateVersion($userID);
+		
+		Zotero_DB::commit();
+		
+		return $toAdd || $toRemove;
+	}
+	
+	
+	//
+	// Methods dealing with relations
+	//
+	// save() is not required for relations functions
+	//
+	/**
+	 * Returns all relations of the item
+	 *
+	 * @return object Object with predicates as keys and URIs as values
+	 */
+	public function getRelations() {
+		if (!$this->id) {
+			return array();
+		}
+		$relations = Zotero_Relations::getByURIs(
+			$this->libraryID,
+			Zotero_URI::getItemURI($this, true)
+		);
+		
+		$toReturn = new stdClass;
+		foreach ($relations as $relation) {
+			$toReturn->{$relation->predicate} = $relation->object;
+		}
+		return $toReturn;
+	}
+	
+	
+	/**
+	 * Updates the item's relations. No separate save of the item is required.
+	 *
+	 * @param object $newRelations Object with predicates as keys and URIs as values
+	 * @param int $userID User making the change
+	 */
+	public function setRelations($newRelations, $userID) {
+		if (!$this->id) {
+			throw new Exception('itemID not set');
+		}
+		
+		Zotero_DB::beginTransaction();
+		
+		// An empty array is allowed by updateFromJSON()
+		if (is_array($newRelations) && empty($newRelations)) {
+			$newRelations = new stdClass;
+		}
+		
+		// Get arrays from objects
+		$oldRelations = get_object_vars($this->getRelations());
+		$newRelations = get_object_vars($newRelations);
+		
+		$toAdd = array_diff($newRelations, $oldRelations);
+		$toRemove = array_diff($oldRelations, $newRelations);
+		
+		if (!$toAdd && !$toRemove) {
+			Zotero_DB::commit();
+			return false;
+		}
+		
+		$subject = Zotero_URI::getItemURI($this, true);
+		
+		foreach ($toAdd as $predicate => $object) {
+			Zotero_Relations::add(
+				$this->libraryID,
+				$subject,
+				$predicate,
+				$object
+			);
+		}
+		
+		foreach ($toRemove as $predicate => $object) {
+			$relations = Zotero_Relations::getByURIs(
+				$this->libraryID,
+				$subject,
+				$predicate,
+				$object
+			);
+			foreach ($relations as $relation) {
+				Zotero_Relations::delete($this->libraryID, $relation->key);
+			}
+		}
+		
+		$this->updateVersion($userID);
+		
+		Zotero_DB::commit();
+		
+		return true;
 	}
 	
 	
@@ -2961,7 +3186,6 @@ class Zotero_Item {
 			}
 		}
 		
-		//$primaryFields = Zotero_Items::$primaryFields;
 		$primaryFields = array();
 		$fields = array_merge($primaryFields, $this->getUsedFields());
 		
@@ -2982,8 +3206,6 @@ class Zotero_Item {
 				case 'itemTypeID':
 				case 'itemID':
 				case 'title':
-				//case 'numAttachments':
-				//case 'numNotes':
 				case 'serverDateModified':
 				case 'version':
 					continue 2;
@@ -3133,7 +3355,7 @@ class Zotero_Item {
 	}
 	
 	
-	public function toJSON($asArray=false, $prettyPrint=false, $includeEmpty=false, $unformattedFields=false) {
+	public function toJSON($asArray=false, $requestParams=array(), $includeEmpty=false, $unformattedFields=false) {
 		if ($this->id || $this->key) {
 			if (!$this->loaded['primaryData']) {
 				$this->loadPrimaryData(true);
@@ -3146,6 +3368,15 @@ class Zotero_Item {
 		$regularItem = $this->isRegularItem();
 		
 		$arr = array();
+		if (!isset($requestParams['apiVersion']) || $requestParams['apiVersion'] >= 2) {
+			$arr['itemKey'] = $this->key;
+			$arr['itemVersion'] = $this->itemVersion;
+			
+			$key = $this->getSourceKey();
+			if ($key) {
+				$arr['parentItem'] = $key;
+			}
+		}
 		$arr['itemType'] = Zotero_ItemTypes::getName($this->itemTypeID);
 		
 		if ($this->isAttachment()) {
@@ -3263,210 +3494,20 @@ class Zotero_Item {
 			}
 		}
 		
+		if (!isset($requestParams['apiVersion']) || $requestParams['apiVersion'] >= 2) {
+			if ($this->isTopLevelItem()) {
+				$collections = $this->getCollections(true);
+				$arr['collections'] = $collections;
+			}
+			
+			$arr['relations'] = $this->getRelations();
+		}
+		
 		if ($asArray) {
 			return $arr;
 		}
 		
-		$mask = JSON_HEX_TAG|JSON_HEX_AMP;
-		if ($prettyPrint) {
-			$json = Zotero_Utilities::json_encode_pretty($arr, $mask);
-		}
-		else {
-			$json = json_encode($arr, $mask);
-		}
-		// Until JSON_UNESCAPED_SLASHES is available
-		$json = str_replace('\\/', '/', $json);
-		return $json;
-	}
-	
-	
-	public function toSolrDocument() {
-		$doc = new SolrInputDocument();
-		
-		$uri = Zotero_Solr::getItemURI($this->libraryID, $this->key);
-		$doc->addField("uri", $uri);
-		
-		// Primary fields
-		foreach (Zotero_Items::$primaryFields as $field) {
-			switch ($field) {
-				case 'itemID':
-				case 'numAttachments':
-				case 'numNotes':
-					continue (2);
-				
-				case 'itemTypeID':
-					$xmlField = 'itemType';
-					$xmlValue = Zotero_ItemTypes::getName($this->$field);
-					break;
-				
-				case 'dateAdded':
-				case 'dateModified':
-				case 'serverDateModified':
-					$xmlField = $field;
-					$xmlValue = Zotero_Date::sqlToISO8601($this->$field);
-					break;
-				
-				default:
-					$xmlField = $field;
-					$xmlValue = $this->$field;
-			}
-			
-			$doc->addField($xmlField, $xmlValue);
-		}
-		
-		// Title for sorting
-		$title = $this->getDisplayTitle(true);
-		$title = $title ? $title : '';
-		// Strip HTML from note titles
-		if ($this->isNote()) {
-			// Clean and strip HTML, giving us an HTML-encoded plaintext string
-			$title = strip_tags($GLOBALS['HTMLPurifier']->purify($title));
-			// Unencode plaintext string
-			$title = html_entity_decode($title);
-		}
-		// Strip some characters
-		$sortTitle = preg_replace("/^[\[\'\"]*(.*)[\]\'\"]*$/", "$1", $title);
-		if ($sortTitle) {
-			$doc->addField('titleSort', $sortTitle);
-		}
-		
-		// Item data
-		$fieldIDs = $this->getUsedFields();
-		foreach ($fieldIDs as $fieldID) {
-			$val = $this->getField($fieldID);
-			if ($val == '') {
-				continue;
-			}
-			
-			$fieldName = Zotero_ItemFields::getName($fieldID);
-			
-			switch ($fieldName) {
-				// As is
-				case 'title':
-					$val = $title;
-					break;
-				
-				// Date fields
-				case 'date':
-					// Add user part as text
-					$doc->addField($fieldName . "_t", Zotero_Date::multipartToStr($val));
-					
-					// Add as proper date, if there is one
-					$sqlDate = Zotero_Date::multipartToSQL($val);
-					if (!$sqlDate || $sqlDate == '0000-00-00') {
-						continue 2;
-					}
-					$fieldName .= "_tdt";
-					$val = Zotero_Date::sqlToISO8601($sqlDate);
-					break;
-				
-				case 'accessDate':
-					if (!Zotero_Date::isSQLDateTime($val)) {
-						continue 2;
-					}
-					$fieldName .= "_tdt";
-					$val = Zotero_Date::sqlToISO8601($val);
-					break;
-				
-				default:
-					$fieldName .= "_t";
-			}
-			
-			$doc->addField($fieldName, $val);
-		}
-		
-		// Deleted item flag
-		if ($this->getDeleted()) {
-			$doc->addField('deleted', true);
-		}
-		
-		if ($this->isNote() || $this->isAttachment()) {
-			$sourceItemID = $this->getSource();
-			if ($sourceItemID) {
-				$sourceItem = Zotero_Items::get($this->libraryID, $sourceItemID);
-				if (!$sourceItem) {
-					throw new Exception("Source item $sourceItemID not found");
-				}
-				$doc->addField('sourceItem', $sourceItem->key);
-			}
-		}
-		
-		// Group modification info
-		$createdByUserID = null;
-		$lastModifiedByUserID = null;
-		switch (Zotero_Libraries::getType($this->libraryID)) {
-			case 'group':
-				$createdByUserID = $this->createdByUserID;
-				$lastModifiedByUserID = $this->lastModifiedByUserID;
-				break;
-		}
-		if ($createdByUserID) {
-			$doc->addField('createdByUserID', $createdByUserID);
-		}
-		if ($lastModifiedByUserID) {
-			$doc->addField('lastModifiedByUserID', $lastModifiedByUserID);
-		}
-		
-		// Note
-		if ($this->isNote()) {
-			$doc->addField('note', $this->getNote());
-		}
-		
-		if ($this->isAttachment()) {
-			$doc->addField('linkMode', $this->attachmentLinkMode);
-			$doc->addField('mimeType', $this->attachmentMIMEType);
-			if ($this->attachmentCharset) {
-				$doc->addField('charset', $this->attachmentCharset);
-			}
-			
-			// TODO: get from a constant
-			if ($this->attachmentLinkMode != 3) {
-				$doc->addField('path', $this->attachmentPath);
-			}
-			
-			$note = $this->getNote();
-			if ($note) {
-				$doc->addField('note', $note);
-			}
-		}
-		
-		// Creators
-		$creators = $this->getCreators();
-		if ($creators) {
-			foreach ($creators as $index => $creator) {
-				$c = $creator['ref'];
-				
-				$doc->addField('creatorKey', $c->key);
-				if ($c->fieldMode == 0) {
-					$doc->addField('creatorFirstName', $c->firstName);
-				}
-				$doc->addField('creatorLastName', $c->lastName);
-				$doc->addField('creatorType', Zotero_CreatorTypes::getName($creator['creatorTypeID']));
-				$doc->addField('creatorIndex', $index);
-			}
-		}
-		
-		// Tags
-		$tags = $this->getTags();
-		if ($tags) {
-			foreach ($tags as $tag) {
-				$doc->addField('tagKey', $tag->key);
-				$doc->addField('tag', $tag->name);
-				$doc->addField('tagType', $tag->type);
-			}
-		}
-		
-		// Related items
-		/*$related = $this->relatedItems;
-		if ($related) {
-			$related = Zotero_Items::get($this->libraryID, $related);
-			$keys = array();
-			foreach ($related as $item) {
-				$doc->addField('relatedItem', $item->key);
-			}
-		}*/
-		
-		return $doc;
+		return Zotero_Utilities::formatJSON($arr, !empty($requestParams['pprint']));
 	}
 	
 	
@@ -3496,14 +3537,27 @@ class Zotero_Item {
 			trigger_error("Invalid itemID '$this->id'", E_USER_ERROR);
 		}
 		
-		$cacheKey = $this->getCacheKey("itemData");
-		$fields = Z_Core::$MC->get($cacheKey);
+		if ($this->cacheEnabled) {
+			$cacheVersion = 1;
+			$cacheKey = $this->getCacheKey("itemData",
+				$cacheVersion
+					. isset(Z_CONFIG::$CACHE_VERSION_ITEM_DATA)
+					? "_" . Z_CONFIG::$CACHE_VERSION_ITEM_DATA
+					: ""
+			);
+			$fields = Z_Core::$MC->get($cacheKey);
+		}
+		else {
+			$fields = false;
+		}
 		if ($fields === false) {
 			$sql = "SELECT fieldID, value FROM itemData WHERE itemID=?";
 			$stmt = Zotero_DB::getStatement($sql, true, Zotero_Shards::getByLibraryID($this->libraryID));
 			$fields = Zotero_DB::queryFromStatement($stmt, $this->id);
 			
-			Z_Core::$MC->set($cacheKey, $fields ? $fields : array());
+			if ($this->cacheEnabled) {
+				Z_Core::$MC->set($cacheKey, $fields ? $fields : array());
+			}
 		}
 		
 		$itemTypeFields = Zotero_ItemFields::getItemTypeFields($this->itemTypeID);
@@ -3552,16 +3606,23 @@ class Zotero_Item {
 			trigger_error("Invalid itemID '$this->id'", E_USER_ERROR);
 		}
 		
-		$cacheKey = $this->getCacheKey("itemCreators");
-		$creators = Z_Core::$MC->get($cacheKey);
-		//var_dump($creators);
+		if ($this->cacheEnabled) {
+			$cacheVersion = 1;
+			$cacheKey = $this->getCacheKey("itemCreators", $cacheVersion);
+			$creators = Z_Core::$MC->get($cacheKey);
+		}
+		else {
+			$creators = false;
+		}
 		if ($creators === false) {
 			$sql = "SELECT creatorID, creatorTypeID, orderIndex FROM itemCreators
 					WHERE itemID=? ORDER BY orderIndex";
 			$stmt = Zotero_DB::getStatement($sql, true, Zotero_Shards::getByLibraryID($this->libraryID));
 			$creators = Zotero_DB::queryFromStatement($stmt, $this->id);
 			
-			Z_Core::$MC->set($cacheKey, $creators ? $creators : array());
+			if ($this->cacheEnabled) {
+				Z_Core::$MC->set($cacheKey, $creators ? $creators : array());
+			}
 		}
 		
 		$this->creators = array();
@@ -3600,23 +3661,52 @@ class Zotero_Item {
 			$this->loadPrimaryData(true);
 		}
 		
-		// TODO: use a prepared statement
-		if (!is_numeric($this->id)) {
-			trigger_error("Invalid itemID '$this->id'", E_USER_ERROR);
+		if ($this->cacheEnabled) {
+			$cacheVersion = 2;
+			$cacheKey = $this->getCacheKey("itemRelated", $cacheVersion);
+			$keys = Z_Core::$MC->get($cacheKey);
 		}
-		
-		$cacheKey = $this->getCacheKey("itemRelated");
-		//$ids = Z_Core::$MC->get($cacheKey);
-		$ids = false;
-		if ($ids === false) {
-			$sql = "SELECT linkedItemID FROM itemRelated WHERE itemID=?";
-			$stmt = Zotero_DB::getStatement($sql, true, Zotero_Shards::getByLibraryID($this->libraryID));
-			$ids = Zotero_DB::columnQueryFromStatement($stmt, $this->id);
+		else {
+			$keys = false;
+		}
+		if ($keys === false) {
+			$sql = "SELECT `key` FROM itemRelated IR "
+			     . "JOIN items I ON (IR.linkedItemID=I.itemID) "
+			     . "WHERE IR.itemID=?";
+			$stmt = Zotero_DB::getStatement(
+				$sql, true, Zotero_Shards::getByLibraryID($this->libraryID)
+			);
+			$keys1 = Zotero_DB::columnQueryFromStatement($stmt, $this->id);
+			if (!$keys1) {
+				$keys1 = array();
+			}
 			
-			Z_Core::$MC->set($cacheKey, $ids ? $ids : array());
+			$baseURI = Zotero_URI::getLibraryURI($this->libraryID, true) . "/items/";
+			$itemURI = $baseURI . $this->key;
+			$len = strlen($baseURI);
+			$sql = "SELECT SUBSTR(object, $len + 1) FROM relations "
+			     . "WHERE libraryID=? AND subject=? AND predicate=? AND object LIKE ?";
+			$keys2 = Zotero_DB::columnQuery(
+				$sql,
+				array(
+					$this->libraryID,
+					$itemURI,
+					Zotero_Relations::$relatedItemPredicate,
+					$baseURI . "%"
+				),
+				Zotero_Shards::getByLibraryID($this->libraryID)
+			);
+			if (!$keys2) {
+				$keys2 = array();
+			}
+			$keys = array_unique(array_merge($keys1, $keys2));
+			
+			if ($this->cacheEnabled) {
+				Z_Core::$MC->set($cacheKey, $keys ? $keys : array());
+			}
 		}
 		
-		$this->relatedItems = $ids ? $ids : array();
+		$this->relatedItems = $keys ? $keys : array();
 		$this->loaded['relatedItems'] = true;
 	}
 	
@@ -3629,57 +3719,49 @@ class Zotero_Item {
 	}
 	
 	
-	private function setRelatedItems($itemIDs) {
+	private function setRelatedItems($itemKeys) {
 		if (!$this->loaded['relatedItems']) {
 			$this->loadRelatedItems();
 		}
 		
-		if (!is_array($itemIDs))  {
-			trigger_error('$itemIDs must be an array', E_USER_ERROR);
+		if (!is_array($itemKeys))  {
+			trigger_error('$itemKeys must be an array', E_USER_ERROR);
 		}
 		
-		$currentIDs = $this->relatedItems;
-		if (!$currentIDs) {
-			$currentIDs = array();
+		$currentKeys = $this->relatedItems;
+		if (!$currentKeys) {
+			$currentKeys = array();
 		}
-		$oldIDs = array(); // children being kept
-		$newIDs = array(); // new children
+		$oldKeys = array(); // items being kept
+		$newKeys = array(); // new items
 		
-		if (!$itemIDs) {
-			if (!$currentIDs) {
+		if (!$itemKeys) {
+			if (!$currentKeys) {
 				Z_Core::debug("No related items added", 4);
 				return false;
 			}
 		}
 		else {
-			/*
-			// Don't bother with this because the DB trigger takes care of it
-			$found = Zotero_Items::get($this->libraryID, $itemIDs);
-			if (sizeOf($found) != sizeOf($itemIDs)) {
-				throw new Exception("Related item(s) not found (" . sizeOf($found) . " != " . sizeOf($itemIDs) . ")");
-			}
-			*/
-			
-			foreach ($itemIDs as $itemID) {
-				if ($itemID == $this->id) {
+			foreach ($itemKeys as $itemKey) {
+				if ($itemKey == $this->key) {
 					Z_Core::debug("Can't relate item to itself in Zotero.Item.setRelatedItems()", 2);
 					continue;
 				}
 				
-				if (in_array($itemID, $currentIDs)) {
-					Z_Core::debug("Item {$this->id} is already related to item $itemID");
-					$oldIDs[] = $itemID;
+				if (in_array($itemKey, $currentKeys)) {
+					Z_Core::debug("Item {$this->key} is already related to item $itemKey");
+					$oldKeys[] = $itemKey;
 					continue;
 				}
 				
 				// TODO: check if related on other side (like client)?
 				
-				$newIDs[] = $itemID;
+				$newKeys[] = $itemKey;
 			}
 		}
 		
-		// Mark as changed if new or removed ids
-		if ($newIDs || sizeOf($oldIDs) != sizeOf($currentIDs)) {
+		// Mark as changed if new or removed keys
+		if ($newKeys || sizeOf($oldKeys) != sizeOf($currentKeys)) {
 			if (!$this->changed['relatedItems']) {
 				$this->storePreviousData('relatedItems');
 				$this->changed['relatedItems'] = true;
@@ -3690,7 +3772,7 @@ class Zotero_Item {
 			return false;
 		}
 		
-		$this->relatedItems = array_merge($oldIDs, $newIDs);
+		$this->relatedItems = array_merge($oldKeys, $newKeys);
 		return true;
 	}
 	
@@ -3698,9 +3780,6 @@ class Zotero_Item {
 	private function getETag() {
 		if (!$this->loaded['primaryData']) {
 			$this->loadPrimaryData();
-		}
-		if (!isset($this->itemVersion)) {
-			error_log("WARNING: Item version not set in getETag()");
 		}
 		return md5($this->serverDateModified . $this->itemVersion);
 	}
@@ -3715,7 +3794,7 @@ class Zotero_Item {
 	}
 	
 	
-	private function getCacheKey($mode) {
+	private function getCacheKey($mode, $cacheVersion=false) {
 		if (!$this->loaded['primaryData']) {
 			$this->loadPrimaryData();
 		}
@@ -3726,12 +3805,10 @@ class Zotero_Item {
 		if (!$mode) {
 			throw new Exception('$mode not provided');
 		}
-		return $mode . "_" . $this->id . "_" . self::getETag() . "_" . Zotero_Items::$cacheVersion;
-	}
-	
-	
-	private function generateKey() {
-		return Zotero_ID::getKey();
+		return $mode
+			. "_". $this->id
+			. "_" . $this->itemVersion
+			. ($cacheVersion ? "_" . $cacheVersion : "");
 	}
 }
 ?>

@@ -213,12 +213,19 @@ class Zotero_Users {
 	/**
 	 * Get a key to represent the current state of all of a user's libraries
 	 */
-	public static function getUpdateKey($userID) {
+	public static function getUpdateKey($userID, $oldStyle=false) {
 		$libraryIDs = Zotero_Libraries::getUserLibraries($userID);
 		$parts = array();
 		foreach ($libraryIDs as $libraryID) {
-			$sql = "SELECT UNIX_TIMESTAMP(lastUpdated) FROM libraries WHERE libraryID=?";
-			$timestamp = Zotero_DB::valueQuery($sql, $libraryID);
+			if ($oldStyle) {
+				$sql = "SELECT UNIX_TIMESTAMP(lastUpdated) FROM shardLibraries WHERE libraryID=?";
+			}
+			else {
+				$sql = "SELECT version FROM shardLibraries WHERE libraryID=?";
+			}
+			$timestamp = Zotero_DB::valueQuery(
+				$sql, $libraryID, Zotero_Shards::getByLibraryID($libraryID)
+			);
 			$parts[] = $libraryID . ':' . $timestamp;
 		}
 		return md5(implode(',', $parts));
@@ -302,7 +309,7 @@ class Zotero_Users {
 		
 		$valid = !!self::getValidUsersDB(array($userID));
 		
-		Z_Core::$MC->set($cacheKey, $valid ? 1 : 0, 86400);
+		Z_Core::$MC->set($cacheKey, $valid ? 1 : 0, 300);
 		
 		return $valid;
 	}
