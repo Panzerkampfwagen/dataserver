@@ -1141,9 +1141,6 @@ class Zotero_Sync {
 				foreach ($updatedIDs as $id) {
 					$group = new Zotero_Group;
 					$group->id = $id;
-					if (!$group->libraryEnabled) {
-						continue;
-					}
 					$xmlElement = $group->toXML($userID);
 					
 					$newNode = dom_import_simplexml($xmlElement);
@@ -1192,7 +1189,12 @@ class Zotero_Sync {
 										$obj->__construct();
 									}
 									$obj->libraryID = $libraryID;
-									$obj->id = $id;
+									if ($name == 'setting') {
+										$obj->name = $id;
+									}
+									else {
+										$obj->id = $id;
+									}
 									if ($name == 'tag') {
 										$xmlElement = call_user_func(array($className, "convert{$Name}ToXML"), $obj, true);
 									}
@@ -1212,6 +1214,10 @@ class Zotero_Sync {
 										if ($apiVersion <= 8) {
 											unset($xmlElement['libraryID']);
 										}
+									}
+									else if ($name == 'setting') {
+										$xmlElement = call_user_func(array($className, "convert{$Name}ToXML"), $obj, $doc);
+										$node->appendChild($xmlElement);
 									}
 									else {
 										$xmlElement = call_user_func(array($className, "convert{$Name}ToXML"), $obj);
@@ -1262,7 +1268,7 @@ class Zotero_Sync {
 						
 						foreach ($deletedKeys[$names] as $row) {
 							$node = $doc->createElement($name);
-							if ($row['libraryID'] != $userLibraryID) {
+							if ($row['libraryID'] != $userLibraryID || $name == 'setting') {
 								$node->setAttribute('libraryID', $row['libraryID']);
 							}
 							$node->setAttribute('key', $row['key']);
@@ -1600,6 +1606,18 @@ class Zotero_Sync {
 				unset($xml->relations);
 			}
 			
+			// Add/update settings
+			if ($xml->settings) {
+				// DOM
+				$xmlElements = dom_import_simplexml($xml->settings);
+				$xmlElements = $xmlElements->getElementsByTagName('setting');
+				foreach ($xmlElements as $xmlElement) {
+					$settingObj = Zotero_Settings::convertXMLToSetting($xmlElement);
+					$settingObj->save();
+				}
+				unset($xml->settings);
+			}
+			
 			// TODO: loop
 			if ($xml->deleted) {
 				// Delete collections
@@ -1652,6 +1670,11 @@ class Zotero_Sync {
 				// Delete relations
 				if ($xml->deleted->relations) {
 					Zotero_Relations::deleteFromXML($xml->deleted->relations);
+				}
+				
+				// Delete relations
+				if ($xml->deleted->settings) {
+					Zotero_Settings::deleteFromXML($xml->deleted->settings);
 				}
 			}
 			

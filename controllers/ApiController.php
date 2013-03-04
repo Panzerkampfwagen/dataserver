@@ -399,7 +399,7 @@ class ApiController extends Controller {
 	 */
 	protected function checkObjectIfUnmodifiedSinceVersion($object, $required=false) {
 		$objectType = Zotero_Utilities::getObjectTypeFromObject($object);
-		if (!in_array($objectType, array('item', 'collection', 'search'))) {
+		if (!in_array($objectType, array('item', 'collection', 'search', 'setting'))) {
 			throw new Exception("Invalid object type");
 		}
 		
@@ -428,7 +428,7 @@ class ApiController extends Controller {
 		}
 		// If-Unmodified-Since-Version
 		else {
-			if (empty($_SERVER['HTTP_IF_UNMODIFIED_SINCE_VERSION'])) {
+			if (!isset($_SERVER['HTTP_IF_UNMODIFIED_SINCE_VERSION'])) {
 				if ($required) {
 					$this->e428("If-Unmodified-Since-Version must be provided for write requests");
 				}
@@ -511,7 +511,7 @@ class ApiController extends Controller {
 	
 	protected function requireContentType($contentType) {
 		if ($_SERVER['CONTENT_TYPE'] != $contentType) {
-			throw new Exception("Content-Type must be '$contentType'", Z_ERROR_INVALID_INPUT);
+			throw new Exception("Content-Type must be $contentType", Z_ERROR_INVALID_INPUT);
 		}
 	}
 	

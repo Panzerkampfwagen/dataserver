@@ -376,6 +376,15 @@ class API {
 	}
 	
 	
+	public static function getGroupLibraryVersion($groupID) {
+		$response = API::groupGet(
+			$groupID,
+			"items?key=" . self::$config['apiKey'] . "&format=keys&limit=1"
+		);
+		return $response->getHeader("Last-Modified-Version");
+	}
+	
+	
 	public static function getItemXML($keys, $context=null) {
 		return self::getObjectXML('item', $keys, $context);
 	}
@@ -600,7 +609,7 @@ class API {
 		$key = (string) array_shift($entryXML->xpath('//atom:entry/zapi:key'));
 		$version = (string) array_shift($entryXML->xpath('//atom:entry/zapi:version'));
 		$content = array_shift($entryXML->xpath('//atom:entry/atom:content'));
-		if (!$content) {
+		if (is_null($content)) {
 			throw new Exception("Atom response does not contain <content>");
 		}
 		
