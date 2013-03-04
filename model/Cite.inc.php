@@ -1,6 +1,4 @@
 <?php
-<<<<<<< HEAD
-=======
 /*
     ***** BEGIN LICENSE BLOCK *****
     
@@ -26,7 +24,6 @@
     ***** END LICENSE BLOCK *****
 */
 
->>>>>>> upstream/master
 class Zotero_Cite {
 	private static $citePaperJournalArticleURL = false;
 	
