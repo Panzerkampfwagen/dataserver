@@ -78,7 +78,7 @@ echo "INSERT INTO libraries (\`libraryID\`, \`libraryType\`, \`lastUpdated\`, \`
 echo "INSERT INTO users (\`userID\`, \`libraryID\`, \`username\`, \`joined\`, \`lastSyncTime\`) VALUES (1, 1, 'testuser', '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
 echo "INSERT INTO users (\`userID\`, \`libraryID\`, \`username\`, \`joined\`, \`lastSyncTime\`) VALUES (2, 2, 'testuser2', '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
 
-echo "INSERT INTO groups (\`groupID\`, \`libraryID\`, \`name\`, \`slug\`, \`type\`, \`libraryEnabled\`, \`libraryEditing\`, \`libraryReading\`, \`fileEditing\`, \`description\`, \`url\`, \`hasImage\`, \`dateAdded\`, \`dateModified\`) VALUES (1, 3, 'Test Group', 'test_group', 'Private', 1, 'admins', 'all', 'members', '', '', 0, '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
+echo "INSERT INTO groups (\`groupID\`, \`libraryID\`, \`name\`, \`slug\`, \`type\`, \`libraryEditing\`, \`libraryReading\`, \`fileEditing\`, \`description\`, \`url\`, \`hasImage\`, \`dateAdded\`, \`dateModified\`) VALUES (1, 3, 'Test Group', 'test_group', 'Private', 'admins', 'all', 'members', '', '', 0, '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
 
 echo "INSERT INTO groupUsers (\`groupID\`, \`userID\`, \`role\`, \`joined\`, \`lastUpdated\`) VALUES (1, 1, 'owner', '0000-00-00 00:00:00', '0000-00-00 00:00:00')" | $MASTER zoterotest_master
 
