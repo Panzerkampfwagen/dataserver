@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# This file, run with supervise from daemontools, will allow to
+# automatically restart the daemon in case of exception/crash/etc.
+# Usage: within the daemon.php directory, run "supervise ."
+php daemon.php
