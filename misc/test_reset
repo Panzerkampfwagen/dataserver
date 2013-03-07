@@ -169,4 +169,4 @@ $ID1 zoterotest_ids < ids.sql
 # auto-increment-increment = 2
 # auto-increment-offset = 2
 
-echo "Reset is successfull. Now run ./test_setup"
+echo "Reset is successful. Now run sudo ./test_setup"

@@ -56,5 +56,5 @@ $itemObj->setField('key', "CCCC3333", false, true);
 $itemObj->setField('itemTypeID', 14, false, true);
 $itemID = $itemObj->save();
 
-echo "Test setup is successfull.\n";
+echo "Test setup is successful.\n";
 ?>
