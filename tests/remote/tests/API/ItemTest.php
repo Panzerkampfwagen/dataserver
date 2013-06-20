@@ -486,6 +486,30 @@ class ItemTests extends APITests {
 	}
 	
 	
+	public function testNewEmptyLinkAttachmentItemWithItemKey() {
+		$key = API::createItem("book", false, $this, 'key');
+		$xml = API::createAttachmentItem("linked_url", $key, $this, 'atom');
+		
+		$response = API::get("items/new?itemType=attachment&linkMode=linked_url");
+		$json = json_decode($response->getBody());
+		$json->parentItem = $key;
+		require_once '../../model/Utilities.inc.php';
+		require_once '../../model/ID.inc.php';
+		$json->itemKey = Zotero_ID::getKey();
+		$json->itemVersion = 0;
+		
+		$response = API::userPost(
+			self::$config['userID'],
+			"items?key=" . self::$config['apiKey'],
+			json_encode(array(
+				"items" => array($json)
+			)),
+			array("Content-Type: application/json")
+		);
+		$this->assert200ForObject($response);
+	}
+	
+	
 	public function testNewEmptyImportedURLAttachmentItem() {
 		$key = API::createItem("book", false, $this, 'key');
 		$xml = API::createAttachmentItem("imported_url", $key, $this, 'atom');
@@ -877,5 +901,29 @@ class ItemTests extends APITests {
 		$data = API::parseDataFromAtomEntry($xml);
 		$json = json_decode($data['content']);
 		$this->assertEquals($date, $json->date);
+	}
+	
+	
+	public function testUnicodeTitle() {
+		$title = "Tést";
+		
+		$xml = API::createItem("book", array("title" => $title), $this);
+		$data = API::parseDataFromAtomEntry($xml);
+		$key = $data['key'];
+		
+		// Test entry
+		$response = API::userGet(
+			self::$config['userID'],
+			"items/$key?key=" . self::$config['apiKey'] . "&content=json"
+		);
+		$this->assertContains('"title":"Tést"', $response->getBody());
+		
+		// Test feed
+		$response = API::userGet(
+			self::$config['userID'],
+			"items?key=" . self::$config['apiKey'] . "&content=json"
+		);
+		$this->assertContains('"title":"Tést"', $response->getBody());
+		echo($response->getBody());
 	}
 }

@@ -26,6 +26,8 @@
 
 // Client subclass to add prefix to all keys and add some other behaviors
 class Z_MemcachedClientLocal {
+	public $requestTime = 0.0;
+	
 	private $client;
 	private $disabled;
 	private $queuing = false;
@@ -96,7 +98,9 @@ class Z_MemcachedClientLocal {
 			throw new Exception('$keys must be an array or string');
 		}
 		
+		$t = microtime(true);
 		$results = $this->client->get($keys);
+		$this->requestTime += microtime(true) - $t;
 		if (!$multi) {
 			return $results;
 		}
@@ -154,7 +158,9 @@ class Z_MemcachedClientLocal {
 			return true;
 		}
 		
+		$t = microtime(true);
 		$success = $this->client->set($this->prefix . $key, $val, null, $exptime);
+		$this->requestTime += microtime(true) - $t;
 		if (!$success && !$this->errorLogged) {
 			Z_Core::logError("Setting memcache value failed (key $key, value $val)");
 			$this->errorLogged = true;
@@ -185,7 +191,10 @@ class Z_MemcachedClientLocal {
 			return true;
 		}
 		
-		return $this->client->add($this->prefix . $key, $val, null, $exptime);
+		$t = microtime(true);
+		$retVal = $this->client->add($this->prefix . $key, $val, null, $exptime);
+		$this->requestTime += microtime(true) - $t;
+		return $retVal;
 	}
 	
 	
@@ -193,7 +202,10 @@ class Z_MemcachedClientLocal {
 		if ($this->disabled){
 			return false;
 		}
-		return $this->client->delete($this->prefix . $key, $time);
+		$t = microtime(true);
+		$retVal = $this->client->delete($this->prefix . $key, $time);
+		$this->requestTime += microtime(true) - $t;
+		return $retVal;
 	}
 	
 	
@@ -201,7 +213,10 @@ class Z_MemcachedClientLocal {
 		if ($this->disabled){
 			return false;
 		}
-		return $this->client->replace($this->prefix . $key, $val, null, $exptime);
+		$t = microtime(true);
+		$retVal = $this->client->replace($this->prefix . $key, $val, null, $exptime);
+		$this->requestTime += microtime(true) - $t;
+		return $retVal;
 	}
 	
 	
@@ -209,7 +224,10 @@ class Z_MemcachedClientLocal {
 		if ($this->disabled){
 			return false;
 		}
-		return $this->client->increment($this->prefix . $key, $value);
+		$t = microtime(true);
+		$retVal = $this->client->increment($this->prefix . $key, $value);
+		$this->requestTime += microtime(true) - $t;
+		return $retVal;
 	}
 	
 	
@@ -217,13 +235,18 @@ class Z_MemcachedClientLocal {
 		if ($this->disabled){
 			return false;
 		}
-		return $this->client->increment($this->prefix . $key, $value);
+		$t = microtime(true);
+		$retVal = $this->client->increment($this->prefix . $key, $value);
+		$this->requestTime += microtime(true) - $t;
+		return $retVal;
 	}
 	
 	public function begin() {
 		if ($this->queuing) {
+			//Z_Core::debug("Already queueing memcached transaction");
 			return false;
 		}
+		//Z_Core::debug("Beginning memcached transaction");
 		$this->queuing = true;
 		return true;
 	}
@@ -233,11 +256,14 @@ class Z_MemcachedClientLocal {
 			throw new Exception("Memcache wasn't queuing");
 		}
 		
+		//Z_Core::debug("Committing memcached transaction");
+		
+		$this->queuing = false;
+		
 		if (!$this->queue) {
 			return;
 		}
 		
-		$this->queuing = false;
 		foreach ($this->queue as $arr) {
 			if (!empty($arr['skip'])) {
 				continue;

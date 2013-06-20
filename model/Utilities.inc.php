@@ -112,7 +112,7 @@ class Zotero_Utilities {
     
 	
 	public static function formatJSON($jsonObj, $pretty=false) {
-		$mask = JSON_HEX_TAG|JSON_HEX_AMP;
+		$mask = JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE;
 		if ($pretty) {
 			$json = self::json_encode_pretty($jsonObj, $mask);
 		}
@@ -196,6 +196,39 @@ class Zotero_Utilities {
 		}
 	
 		return $new_json;
+	}
+	
+	
+	/**
+	 * Strip control characters from string
+	 */
+	public static function cleanString($str) {
+		$chars = array();
+		for ($i = 0; $i < 32; $i++) {
+			// Don't strip line feed and tab
+			if ($i != 9 && $i != 10) {
+				$chars[] = chr($i);
+			}
+		}
+		$chars[] = chr(127);
+		return str_replace($chars, '', $str);
+	}
+	
+	
+	/**
+	 * Recursively call cleanString() on an object's scalar properties
+	 */
+	public static function cleanStringRecursive($obj) {
+		foreach ($obj as &$val) {
+			if (is_scalar($val) || $val === null) {
+				if (is_string($val)) {
+					$val = self::cleanString($val);
+				}
+			}
+			else {
+				self::{__FUNCTION__}($val);
+			}
+		}
 	}
 	
 	

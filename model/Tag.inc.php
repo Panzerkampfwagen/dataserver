@@ -164,16 +164,21 @@ class Zotero_Tag {
 	
 	
 	public function hasChanged() {
-		return in_array(true, array_values($this->changed));
+		// Exclude 'dateModified' from test
+		$changed = $this->changed;
+		if (!empty($changed['dateModified'])) {
+			unset($changed['dateModified']);
+		}
+		return in_array(true, array_values($changed));
 	}
 	
 	
-	public function save($full=false) {
+	public function save($userID=false, $full=false) {
 		if (!$this->libraryID) {
 			trigger_error("Library ID must be set before saving", E_USER_ERROR);
 		}
 		
-		Zotero_Tags::editCheck($this);
+		Zotero_Tags::editCheck($this, $userID);
 		
 		if (!$this->hasChanged()) {
 			Z_Core::debug("Tag $this->id has not changed");
@@ -527,7 +532,8 @@ class Zotero_Tag {
 		$content = $content[0];
 		
 		$xml = new SimpleXMLElement(
-			'<entry xmlns="' . Zotero_Atom::$nsAtom
+			'<?xml version="1.0" encoding="UTF-8"?>'
+			. '<entry xmlns="' . Zotero_Atom::$nsAtom
 			. '" xmlns:zapi="' . Zotero_Atom::$nsZoteroAPI . '"/>'
 		);
 		

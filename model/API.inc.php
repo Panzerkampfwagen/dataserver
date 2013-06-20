@@ -483,6 +483,9 @@ class Zotero_API {
 			case 'keys':
 			case 'versions':
 				return 0;
+			
+			case 'bib':
+				return self::$maxBibliographyItems;
 		}
 		
 		return self::$defaultQueryParams['limit'];
@@ -494,6 +497,9 @@ class Zotero_API {
 			case 'keys':
 			case 'versions':
 				return 0;
+			
+			case 'bib':
+				return self::$maxBibliographyItems;
 		}
 		
 		return 100;
@@ -590,11 +596,11 @@ class Zotero_API {
 						. "$objectType key of request", 409);
 				}
 				
-				$exists = true;
+				$exists = !!$object->id;
 			}
 			else {
 				$object->key = $json->$keyProp;
-				$exists = !$object->id;
+				$exists = !!$object->id;
 			}
 		}
 		else {

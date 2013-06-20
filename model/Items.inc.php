@@ -1013,7 +1013,7 @@ class Zotero_Items extends Zotero_DataObjects {
 		);
 		$cachedParams = Z_Array::filterKeys($queryParams, $allowedParams);
 		
-		$cacheVersion = 1;
+		$cacheVersion = 2;
 		$cacheKey = "atomEntry_" . $item->libraryID . "/" . $item->id . "_"
 			. md5(
 				$version
@@ -1127,7 +1127,7 @@ class Zotero_Items extends Zotero_DataObjects {
 				StatsD::increment("memcached.items.itemToAtom.hit");
 				
 				// Skip the cache every 10 times for now, to ensure cache sanity
-				if (true || Z_Core::probability(10)) {
+				if (Z_Core::probability(10)) {
 					$xmlstr = $xml->saveXML();
 				}
 				else {
@@ -1145,7 +1145,8 @@ class Zotero_Items extends Zotero_DataObjects {
 		$contentParamString = urlencode(implode(',', $content));
 		$style = $queryParams['style'];
 		
-		$entry = '<entry xmlns="' . Zotero_Atom::$nsAtom . '" xmlns:zapi="' . Zotero_Atom::$nsZoteroAPI . '"/>';
+		$entry = '<?xml version="1.0" encoding="UTF-8"?>'
+			. '<entry xmlns="' . Zotero_Atom::$nsAtom . '" xmlns:zapi="' . Zotero_Atom::$nsZoteroAPI . '"/>';
 		$xml = new SimpleXMLElement($entry);
 		
 		$title = $item->getDisplayTitle(true);
@@ -1412,6 +1413,11 @@ class Zotero_Items extends Zotero_DataObjects {
 					$uncached
 				);
 				$uncached = str_replace(
+					'<title></title>',
+					'<title/>',
+					$uncached
+				);
+				$uncached = str_replace(
 					'<note></note>',
 					'<note/>',
 					$uncached
@@ -1419,6 +1425,11 @@ class Zotero_Items extends Zotero_DataObjects {
 				$uncached = str_replace(
 					'<path></path>',
 					'<path/>',
+					$uncached
+				);
+				$uncached = str_replace(
+					'<td></td>',
+					'<td/>',
 					$uncached
 				);
 				
@@ -1898,6 +1909,10 @@ class Zotero_Items extends Zotero_DataObjects {
 					foreach ($val as $tag) {
 						$empty = true;
 						
+						if (!is_object($tag)) {
+							throw new Exception("Tag must be an object", Z_ERROR_INVALID_INPUT);
+						}
+						
 						foreach ($tag as $k=>$v) {
 							switch ($k) {
 								case 'tag':
@@ -2101,7 +2116,7 @@ class Zotero_Items extends Zotero_DataObjects {
 						throw new Exception("'$val' is not a valid linkMode", Z_ERROR_INVALID_INPUT);
 					}
 					// Don't allow changing of linkMode
-					if ($item && $linkMode != $item->attachmentLinkMode) {
+					if (!$isNew && $linkMode != $item->attachmentLinkMode) {
 						throw new Exception("Cannot change attachment linkMode", Z_ERROR_INVALID_INPUT);
 					}
 					break;
