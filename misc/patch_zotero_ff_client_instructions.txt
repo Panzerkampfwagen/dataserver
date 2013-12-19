@@ -1,0 +1,17 @@
+Procedure
+=========
+
+---- 4.0.17.1 ----
+
+unzip zotero-4.0.17.1.xpi -d ./zotero-4.0.17.1-patched
+cd zotero-4.0.17.1-patched
+patch -p1 < ../patch_4.0.17.1.txt
+zip -rq ../zotero-4.0.17.1-patched.xpi *
+
+
+
+---- To generate the patch (after removing *.orig files if any): ----
+
+cd ..
+unzip zotero-4.0.17.1.xpi -d ./zotero-4.0.17.1-patched
+diff -rupN zotero-4.0.17.1-vanilla zotero-4.0.17.1-patched > patch_4.0.17.1.txt
