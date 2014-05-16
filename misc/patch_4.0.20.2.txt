@@ -1,0 +1,120 @@
+diff -rupN zotero-4.0.20.2-vanilla/chrome/content/zotero/preferences/preferences_sync.xul zotero-4.0.20.2-patched/chrome/content/zotero/preferences/preferences_sync.xul
+--- zotero-4.0.20.2-vanilla/chrome/content/zotero/preferences/preferences_sync.xul	2014-03-20 21:02:40.000000000 +0000
++++ zotero-4.0.20.2-patched/chrome/content/zotero/preferences/preferences_sync.xul	2014-05-16 09:01:32.606679029 +0100
+@@ -31,6 +31,7 @@
+ 			helpTopic="sync">
+ 		<preferences>
+ 			<preference id="pref-sync-autosync" name="extensions.zotero.sync.autoSync" type="bool"/>
++			<preference id="pref-sync-url" name="extensions.zotero.sync.server.url" type="string" instantApply="true"/>
+ 			<preference id="pref-sync-username" name="extensions.zotero.sync.server.username" type="unichar" instantApply="true"/>
+ 			<preference id="pref-sync-fulltext-enabled" name="extensions.zotero.sync.fulltext.enabled" type="bool"/>
+ 			<preference id="pref-storage-enabled" name="extensions.zotero.sync.storage.enabled" type="bool"/>
+@@ -64,6 +65,11 @@
+ 								
+ 								<rows>
+ 									<row>
++									        <label value="URL:"/>
++										<textbox preference="pref-sync-url"
++											 onchange="Zotero.Prefs.set('sync.server.url', this.value.trim()); Zotero.Sync.Server._serverURL=this.value"/>
++									 </row>
++									 <row>
+ 										<label value="&zotero.preferences.sync.username;"/>
+ 										<textbox preference="pref-sync-username"
+ 											onchange="this.value = this.value.trim(); Zotero.Prefs.set('sync.server.username', this.value); var pass = document.getElementById('sync-password'); if (pass.value) { Zotero.Sync.Server.password = pass.value; }"/>
+diff -rupN zotero-4.0.20.2-vanilla/chrome/content/zotero/xpcom/sync.js zotero-4.0.20.2-patched/chrome/content/zotero/xpcom/sync.js
+--- zotero-4.0.20.2-vanilla/chrome/content/zotero/xpcom/sync.js	2014-04-24 05:30:28.000000000 +0100
++++ zotero-4.0.20.2-patched/chrome/content/zotero/xpcom/sync.js	2014-05-16 08:40:48.052343376 +0100
+@@ -1357,7 +1357,8 @@ Zotero.Sync.Server = new function () {
+ 	};
+ 	
+ 	function login() {
+-		var url = _serverURL + "login";
++	        var _serverURL = Zotero.Prefs.get('sync.server.url');
++		var url = _serverURL.replace(/\/$/m,"") + "/login";
+ 		
+ 		var username = Zotero.Sync.Server.username;
+ 		if (!username) {
+@@ -1484,7 +1485,8 @@ Zotero.Sync.Server = new function () {
+ 		}
+ 		
+ 		// Get updated data
+-		var url = _serverURL + 'updated';
++		var _serverURL = Zotero.Prefs.get('sync.server.url');
++		var url = _serverURL.replace(/\/$/m,"") + "/updated";
+ 		var lastsync = Zotero.Sync.Server.lastRemoteSyncTime;
+ 		if (!lastsync) {
+ 			lastsync = 1;
+@@ -1677,7 +1679,8 @@ Zotero.Sync.Server = new function () {
+ 						
+ 						Zotero.Sync.Runner.setSyncStatus(Zotero.getString('sync.status.uploadingData'));
+ 						
+-						var url = _serverURL + 'upload';
++						var _serverURL = Zotero.Prefs.get('sync.server.url');
++						var url = _serverURL.replace(/\/$/m,"") + "/upload";
+ 						var body = _apiVersionComponent
+ 									+ '&' + Zotero.Sync.Server.sessionIDComponent
+ 									+ '&updateKey=' + updateKey
+@@ -1707,7 +1710,8 @@ Zotero.Sync.Server = new function () {
+ 									case 'queued':
+ 										Zotero.Sync.Runner.setSyncStatus(Zotero.getString('sync.status.uploadAccepted'));
+ 										
+-										var url = _serverURL + 'uploadstatus';
++								                var _serverURL = Zotero.Prefs.get('sync.server.url');
++									        var url = _serverURL.replace(/\/$/m,"") + "/uploadstatus";
+ 										var body = _apiVersionComponent
+ 													+ '&' + Zotero.Sync.Server.sessionIDComponent;
+ 										Zotero.HTTP.doPost(url, body, function (xmlhttp) {
+@@ -1869,7 +1873,8 @@ Zotero.Sync.Server = new function () {
+ 			return;
+ 		}
+ 		
+-		var url = _serverURL + "clear";
++	        var _serverURL = Zotero.Prefs.get('sync.server.url');
++		var url = _serverURL.replace(/\/$/m,"") + "/clear";
+ 		var body = _apiVersionComponent
+ 					+ '&' + Zotero.Sync.Server.sessionIDComponent;
+ 		
+@@ -1930,7 +1935,8 @@ Zotero.Sync.Server = new function () {
+ 	
+ 	
+ 	function logout(callback) {
+-		var url = _serverURL + "logout";
++		var _serverURL = Zotero.Prefs.get('sync.server.url');
++		var url = _serverURL.replace(/\/$/m,"") + "/logout";
+ 		var body = _apiVersionComponent
+ 					+ '&' + Zotero.Sync.Server.sessionIDComponent;
+ 		
+diff -rupN zotero-4.0.20.2-vanilla/defaults/preferences/zotero.js zotero-4.0.20.2-patched/defaults/preferences/zotero.js
+--- zotero-4.0.20.2-vanilla/defaults/preferences/zotero.js	2014-04-28 19:27:24.000000000 +0100
++++ zotero-4.0.20.2-patched/defaults/preferences/zotero.js	2014-05-16 08:40:48.052343376 +0100
+@@ -130,6 +130,7 @@ pref("extensions.zotero.annotations.warn
+ 
+ // Sync
+ pref("extensions.zotero.sync.autoSync", true);
++pref("extensions.zotero.sync.server.url", 'https://sync.zotero.org/');
+ pref("extensions.zotero.sync.server.username", '');
+ pref("extensions.zotero.sync.server.compressData", true);
+ pref("extensions.zotero.sync.storage.enabled", true);
+diff -rupN zotero-4.0.20.2-vanilla/install.rdf zotero-4.0.20.2-patched/install.rdf
+--- zotero-4.0.20.2-vanilla/install.rdf	2014-04-30 22:49:28.000000000 +0100
++++ zotero-4.0.20.2-patched/install.rdf	2014-05-16 09:03:24.257074096 +0100
+@@ -6,7 +6,7 @@
+   
+     <em:id>zotero@chnm.gmu.edu</em:id>
+     <em:name>Zotero</em:name>
+-    <em:version>4.0.20.2</em:version>
++    <em:version>4.0.20.2-patched</em:version>
+     <em:creator>Center for History and New Media<br/>George Mason University</em:creator>
+     <em:contributor>Dan Cohen</em:contributor>
+     <em:contributor>Sean Takats</em:contributor>
+@@ -17,8 +17,9 @@
+     <em:optionsURL>chrome://zotero/content/preferences/preferences.xul</em:optionsURL>
+     <em:aboutURL>chrome://zotero/content/about.xul</em:aboutURL>
+     <em:iconURL>chrome://zotero/skin/zotero-new-z-48px.png</em:iconURL>
+-    <em:updateURL>https://www.zotero.org/download/update.rdf</em:updateURL>
++    <em:updateURL></em:updateURL>
+     <em:type>2</em:type> <!-- type=extension --> 
++    <em:unpack>true</em:unpack>
+     
+     <!-- Firefox -->
+     <em:targetApplication>
