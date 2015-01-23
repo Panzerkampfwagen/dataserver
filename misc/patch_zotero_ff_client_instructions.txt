@@ -1,17 +1,20 @@
 Procedure
 =========
 
----- 4.0.20.2 ----
+---- 4.0.25.2 ----
 
-unzip zotero-4.0.20.2.xpi -d ./zotero-4.0.20.2-patched
-cd zotero-4.0.20.2-patched
-patch -p1 < ../patch_4.0.20.2.txt
-zip -rq ../zotero-4.0.20.2-patched.xpi *
+unzip zotero-4.0.25.2.xpi -d ./zotero-4.0.25.2-patched
+cd zotero-4.0.25.2-patched
+patch -p1 < ../patch_4.0.25.2.txt
+zip -rq ../zotero-4.0.25.2-patched.xpi *
 
 
 
 ---- To generate the patch (after removing *.orig files if any): ----
 
+First delete any *.orig files left in the patched directory. Use find . -name *.orig to locate them.
+Then cd to the parent directory of the patched directory:
+
 cd ..
-unzip zotero-4.0.20.2.xpi -d ./zotero-4.0.20.2-vanilla
-diff -rupN zotero-4.0.20.2-vanilla zotero-4.0.20.2-patched > patch_4.0.20.2.txt
+unzip zotero-4.0.25.2.xpi -d ./zotero-4.0.25.2-vanilla
+diff -rupN zotero-4.0.25.2-vanilla zotero-4.0.25.2-patched > patch_4.0.25.2.txt
